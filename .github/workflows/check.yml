@@ -1,8 +1,10 @@
 name: cargo check
 
 # Phase 0 baseline CI: cheap compile gate on every push.
-# Full build + installers on tag/PR is S3 (Phase 2) — extend, don't duplicate.
-on: push
+# Full build + installers on tag/PR is S3 (release.yml) — tags skip this one.
+on:
+  push:
+    tags-ignore: ['v*']
 
 jobs:
   check:
