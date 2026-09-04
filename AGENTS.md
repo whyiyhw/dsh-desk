@@ -63,7 +63,14 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **single-instance 会让测试 exe 立即 `exit 0`**（礼让给旧实例并 show+focus）——看到"启动即退出"先查旧实例（含并行会话的），不是崩溃。
 - **进程清理一律 `taskkill /PID x /T /F`**：PowerShell `Stop-Process -Force` 不杀子树，会留 dsh 孤儿污染 Quit 清点（曾两次误判成产品泄漏）。但注意下一条——强杀风暴有副作用。
 - **强杀实例后 WebView2 首导航偶发 `tauri.localhost`→"127.0.0.1 拒绝连接"错误页**（脏 profile）：杀净 `msedgewebview2` 再启动即愈；错误页上 eval 仍可执行（`location.replace` 能把窗口导航走）。
-- **强杀风暴还会弄脏 EBWebView 的 cookie 库 → 窗口 401**（"dsh web authentication required"，2026-09-05 用户实测复现；同页 SameSite=Strict 认证 cookie 存不进/发不出）。服务端无头链路（token→303+Set-Cookie→带 cookie `/`→200）全通，唯独 webview 401 = 本症。**处置**：退出应用 → 只杀 `dshdesk` 名下的 msedgewebview2（按命令行过滤，别 `/IM` 全杀）→ 删 `%LOCALAPPDATA%\com.whyiyhw.dshdesk\EBWebView\Default\Network\Cookies` 与 `Cookies-journal` → 重启。**判定 GUI 真在线的金标准**：`netstat` 看到 `msedgewebview2 ↔ node:<port>` 有 ESTABLISHED（GUI 的 mux WS，握手需有效 cookie）——"AX 树无 401 文本"不可靠（窗口最小化时正文不暴露，曾两度误判）。
+- **强杀风暴还会弄脏 EBWebView 的 cookie 库 → 窗口 401**（"dsh web authentication required"，2026-09-05 用户实测复现；同页 SameSite=Strict 认证 cookie 存不进/发不出）。服务端无头链路（token→303+Set-Cookie→带 cookie `/`→200）全通，唯独 webview 401 = 本症。**处置**：退出应用 → 只杀 `dshdesk` 名下的 msedgewebview2（按命令行过滤，别 `/IM` 全杀）→ 删 `%LOCALAPPDATA%\com.whyiyhw.dshdesk\EBWebView\Default\Network\Cookies` 与 `Cookies-journal` → 重启。**判定 GUI 真在线的金标准**：`netstat` 看到 `msedgewebview2 ↔ node:<port>` 有 ESTABLISHED（GUI 的 mux WS，握手需有效 cookie）——"AX 树无 401 文本"不可靠（窗口最小化时正文不暴露，曾两度误判）。**2026-09-05 补充：干净 Quit 周期也会复现**（Phase 3 会话多轮干净重启后 WS 无建立、窗口标题停在 "DSH Desk"）——触发面不止强杀风暴，长测试序列后若 WS 不建立直接按上法处置即可，一律以 netstat 为准。
+
+### S9/S13 与发布链路补充（Phase 3 交付沉淀，2026-09-05）
+
+- **tauri-plugin-window-state 的默认 flags 是陷阱**：`all()` 含 VISIBLE 与 MAXIMIZED，两个都会在启动期把 `visible:false` 的窗口拉出来（VISIBLE→`show()+set_focus()`；MAXIMIZED→`maximize()`→Win32 `SW_MAXIMIZE`＝激活并显示）。dsh-desk 只保 SIZE|POSITION。另：插件的 `Moved` 处理器不设最大化守卫，最大化会话会把缓存位置写成显示器原点，恢复时窗口落在 (-9,-9)——无害已知瑕疵。
+- **启动期文件副作用（轮转/截断）必须放在 single-instance 判定之后**（setup 内）：第二实例在 builder 期 single-instance init 里 `exit(0)`，到不了 setup；放 run() 顶部会让二次启动把运行中实例的活日志腰斩进 `.old`。
+- **就绪计数基线会被 S13 日志轮转作废**：启动前取的 `'dsh web: http'` 计数基线在轮转后（新日志从零计）永远追不上，launch 类脚本必须在启动后（等轮转落定）重取基线；就绪与可见的先后判据用"首次可见瞬间日志里是否已有就绪行"，别用两个轮询时间戳相减（同周期内先盖 visible 戳是测量伪影，曾 1ms 假违约）。成品 `%TEMP%\p3-smoke\launch-probe.ps1`。
+
 
 ### S2 生命周期代数（S2 交付沉淀，2026-09-05）
 
