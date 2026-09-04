@@ -5,10 +5,10 @@ Desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 ## What it does
 
 - **Server lifecycle**: spawns `dsh --profile web` as a child process, watches stdout for the `dsh web: <url>` readiness line (which carries the auth token), then navigates the window to the authenticated GUI. No copy-pasting tokens.
-- **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Quit (stops the server).
+- **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Edit config / Quit (stops the server).
 - **Global hotkey**: `Alt+Shift+D` shows/hides the window from anywhere.
 - **Single instance**: a second launch focuses the existing window.
-- **Diagnostics**: all dsh stdout/stderr is mirrored to the console dsh-desk was started from; a server that dies before printing its URL replaces the window content with the failure.
+- **Guided failures**: every dead end turns into an actionable panel — a slow/failed server shows Open log / Open config / Retry; a machine without dsh shows an install guide; a WebView2 runtime older than Chromium 119 shows the runtime-download guide.
 
 ## Install (from source)
 
@@ -39,12 +39,12 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 ```json
 {
   "command": "node",
-  "args": ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", "web", "--no-open"],
+  "args": ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", "web", "--no-open", "--port", "0"],
   "cwd": "D:\\www\\github\\deepseek-harness"
 }
 ```
 
-- `command` / `args`: how to launch dsh. `--no-open` keeps the default browser from popping up (the window is the browser).
+- `command` / `args`: how to launch dsh. `--no-open` keeps the default browser from popping up (the window is the browser). `--port 0` lets the OS pick a free port — the shell navigates to whatever URL dsh prints, so the port drifting between launches is fine; drop it only if you know the default port is free.
 - `cwd`: optional working directory (a source checkout root).
 - The dsh stdout/stderr mirror to `%APPDATA%\dsh-desk\dsh-desk.log`.
 
@@ -52,6 +52,7 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 
 - The shell depends only on the stable web surface (the printed authenticated URL), not on DSH internals — safe across harness upgrades.
 - Sessions are durable on the dsh side: Quit stops the server, but your sessions resume on the next launch.
+- **WebView2 Runtime requirement**: the served GUI uses modern JS APIs (`AbortSignal.any`, `Promise.withResolvers`), so the WebView2 Runtime must be **Chromium 119+** (recommend ≥ 120). If the window renders but shows a persistent "connection lost" badge while a regular browser works, check the runtime version first — see `AGENTS.md` for the one-liner and the force-update procedure.
 
 ## License
 

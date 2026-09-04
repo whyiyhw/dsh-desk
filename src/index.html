@@ -14,7 +14,7 @@
         color: #555;
         background: #f5f5f5;
       }
-      .box { text-align: center; }
+      .box { text-align: center; max-width: 620px; padding: 24px; }
       .spin {
         width: 28px;
         height: 28px;
@@ -25,12 +25,133 @@
         animation: r 0.9s linear infinite;
       }
       @keyframes r { to { transform: rotate(360deg); } }
+      #hint {
+        display: none;
+        margin-top: 18px;
+        color: #7a5d1e;
+        background: #fdf6e3;
+        border: 1px solid #e8d9a0;
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 13px;
+      }
+      .path { font-family: Consolas, monospace; font-size: 12px; color: #777; }
+      /* Full-page states (degraded / onboarding / runtime-too-old) share the
+         same panel chrome; only the message and buttons differ. They must stay
+         plain-JS renderable on old WebView2 runtimes — the runtime panel in
+         particular shows up exactly there. */
+      .panel { display: none; }
+      .panel .msg {
+        white-space: pre-wrap;
+        line-height: 1.6;
+        text-align: left;
+      }
+      .panel .actions {
+        margin-top: 22px;
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+      }
+      .panel button {
+        font: 13px system-ui, sans-serif;
+        padding: 8px 18px;
+        border: 1px solid #b9b9b9;
+        border-radius: 6px;
+        background: #fff;
+        color: #333;
+        cursor: pointer;
+      }
+      .panel button:hover { background: #efefef; }
     </style>
   </head>
   <body>
-    <div class="box">
+    <div class="box" id="starting">
       <div class="spin"></div>
       <div>Starting the dsh web server…</div>
+      <div id="hint">
+        Still starting — first runs can take a while. Everything the server
+        prints is being written to
+        <span class="path">%APPDATA%\dsh-desk\dsh-desk.log</span>
+      </div>
     </div>
+    <div class="box panel" id="degraded">
+      <div class="msg" id="degraded-msg"></div>
+      <div class="actions">
+        <button id="btn-log" type="button">Open log</button>
+        <button id="btn-config" type="button">Open config</button>
+        <button id="btn-retry" type="button">Retry</button>
+      </div>
+    </div>
+    <div class="box panel" id="onboarding">
+      <div class="msg" id="onboarding-msg"></div>
+      <div class="actions">
+        <button id="btn-onb-config" type="button">Open config</button>
+        <button id="btn-onb-dsh" type="button">Open dsh project page</button>
+        <button id="btn-onb-retry" type="button">Retry</button>
+      </div>
+    </div>
+    <div class="box panel" id="runtime-old">
+      <div class="msg" id="runtime-old-msg"></div>
+      <div class="actions">
+        <button id="btn-wv2-download" type="button">Open WebView2 download</button>
+        <button id="btn-wv2-retry" type="button">Retry</button>
+      </div>
+    </div>
+    <script>
+      // State helpers driven from Rust via window.eval; all of them are
+      // guarded on the caller side so they can run on any page.
+      var panels = ['starting', 'degraded', 'onboarding', 'runtime-old'];
+      var activePanel = 'starting';
+      function showPanel(id) {
+        activePanel = id;
+        for (var i = 0; i < panels.length; i++) {
+          document.getElementById(panels[i]).style.display =
+            panels[i] === id ? 'block' : 'none';
+        }
+      }
+      function deskShowHint() {
+        document.getElementById('hint').style.display = 'block';
+      }
+      function deskShowDegraded(message) {
+        document.getElementById('degraded-msg').textContent = message;
+        showPanel('degraded');
+      }
+      function deskShowOnboarding(message) {
+        document.getElementById('onboarding-msg').textContent = message;
+        showPanel('onboarding');
+      }
+      function deskShowRuntimeOld(message) {
+        document.getElementById('runtime-old-msg').textContent = message;
+        showPanel('runtime-old');
+      }
+      function deskReset() {
+        document.getElementById('degraded-msg').textContent = '';
+        document.getElementById('onboarding-msg').textContent = '';
+        document.getElementById('runtime-old-msg').textContent = '';
+        document.getElementById('hint').style.display = 'none';
+        showPanel('starting');
+      }
+      const invoke = async (cmd) => {
+        try {
+          if (!window.__TAURI__?.core?.invoke) throw new Error('Tauri bridge unavailable');
+          await window.__TAURI__.core.invoke(cmd);
+        } catch (error) {
+          // Surface the failure in whichever panel is showing (the starting
+          // page has no message element and no buttons, so it never gets here).
+          const target =
+            document.getElementById(activePanel + '-msg') ||
+            document.getElementById('degraded-msg');
+          target.textContent += '\n[action failed: ' + cmd + ' — ' + error + ']';
+        }
+      };
+      document.getElementById('btn-log').addEventListener('click', () => invoke('open_log_file'));
+      document.getElementById('btn-config').addEventListener('click', () => invoke('open_config_file'));
+      document.getElementById('btn-retry').addEventListener('click', () => invoke('retry_server'));
+      document.getElementById('btn-onb-config').addEventListener('click', () => invoke('open_config_file'));
+      document.getElementById('btn-onb-dsh').addEventListener('click', () => invoke('open_dsh_page'));
+      document.getElementById('btn-onb-retry').addEventListener('click', () => invoke('retry_server'));
+      document.getElementById('btn-wv2-download').addEventListener('click', () => invoke('open_webview2_download'));
+      document.getElementById('btn-wv2-retry').addEventListener('click', () => invoke('retry_server'));
+    </script>
   </body>
 </html>
