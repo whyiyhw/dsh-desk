@@ -32,6 +32,11 @@ const DSH_PROJECT_URL: &str = "https://github.com/deepseek-ai/deepseek-harness";
 /// (0x80040828), which is precisely the machines this guide targets
 /// (docs/postmortem-2026-09-04-webview2-114.md).
 const WEBVIEW2_DOWNLOAD_URL: &str = "https://go.microsoft.com/fwlink/?linkid=2124701";
+/// The app's own releases, newest first (S5a). The list endpoint — not
+/// `/releases/latest` — so prereleases count: on a 0.x line, a prerelease is
+/// still worth offering. Drafts are invisible to unauthenticated reads and
+/// can never appear here.
+const RELEASES_API_URL: &str = "https://api.github.com/repos/whyiyhw/dsh-desk/releases?per_page=1";
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -725,6 +730,166 @@ fn boot_server(app: &AppHandle) {
     std::thread::spawn(move || run_lifecycle_cycle(&app, false));
 }
 
+/// A parsed release version: three numbers plus an optional `-prerelease`
+/// suffix. Ordering follows semver: numbers first, and for equal numbers a
+/// plain release sorts ABOVE its own prereleases (`1.0.0` > `1.0.0-rc1`).
+#[derive(PartialEq, Eq)]
+struct ReleaseVersion {
+    numbers: [u64; 3],
+    prerelease: Option<String>,
+}
+
+impl ReleaseVersion {
+    /// Strictly `v?X.Y.Z` with an optional `-suffix`: a tag that cannot be
+    /// compared must not be guessed into an update verdict — `None` makes the
+    /// caller treat it as no update.
+    fn parse(text: &str) -> Option<Self> {
+        let trimmed = text.trim();
+        let body = trimmed.strip_prefix('v').unwrap_or(trimmed);
+        let (numbers, prerelease) = match body.split_once('-') {
+            Some((head, suffix)) => (head, Some(suffix.to_string())),
+            None => (body, None),
+        };
+        let mut parts = numbers.split('.');
+        let mut parsed = [0u64; 3];
+        for slot in &mut parsed {
+            *slot = parts.next()?.parse().ok()?;
+        }
+        if parts.next().is_some() {
+            return None;
+        }
+        Some(Self {
+            numbers: parsed,
+            prerelease,
+        })
+    }
+}
+
+impl Ord for ReleaseVersion {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        self.numbers
+            .cmp(&other.numbers)
+            .then_with(|| match (&self.prerelease, &other.prerelease) {
+                (None, None) => Ordering::Equal,
+                // A plain release outranks any prerelease of the same numbers.
+                (None, Some(_)) => Ordering::Greater,
+                (Some(_), None) => Ordering::Less,
+                (Some(a), Some(b)) => prerelease_cmp(a, b),
+            })
+    }
+}
+
+impl PartialOrd for ReleaseVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Semver prerelease-identifier ordering: dot-separated identifiers compare
+/// pairwise — numeric identifiers by value and below alphanumeric ones,
+/// alphanumeric lexically — and a prefix sorts below its extensions
+/// (`rc` < `rc.1`).
+fn prerelease_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut a_ids = a.split('.');
+    let mut b_ids = b.split('.');
+    loop {
+        match (a_ids.next(), b_ids.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) => {
+                let ordering = match (x.parse::<u64>(), y.parse::<u64>()) {
+                    (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+                    (Ok(_), Err(_)) => Ordering::Less,
+                    (Err(_), Ok(_)) => Ordering::Greater,
+                    (Err(_), Err(_)) => x.cmp(y),
+                };
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+        }
+    }
+}
+
+/// Whether a release tag is strictly newer than the running version.
+/// `None`: either side is not a comparable version.
+fn tag_is_newer(tag: &str, current: &str) -> Option<bool> {
+    Some(ReleaseVersion::parse(tag)? > ReleaseVersion::parse(current)?)
+}
+
+/// Set while an update check is in flight so rapid tray clicks coalesce into
+/// one GitHub API call instead of racing (the unauthenticated API allows 60
+/// requests per hour per IP).
+static UPDATE_CHECK_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// S5a: ask GitHub for the newest release and open its page when it is newer
+/// than this build. Runs on its own thread — the tray handler must not block
+/// on HTTP — and every failure only logs: an update check that cannot reach
+/// the network must never disturb the running server.
+fn check_for_updates(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if UPDATE_CHECK_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+            log_line("dsh-desk: an update check is already in progress — skipping");
+            return;
+        }
+        // All exits run through the end of this closure, so the flag is
+        // always released.
+        run_update_check(&app);
+        UPDATE_CHECK_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
+}
+
+fn run_update_check(app: &AppHandle) {
+    log_line("dsh-desk: checking for updates...");
+    let current = app.package_info().version.to_string();
+    let latest = ureq::get(RELEASES_API_URL)
+        .timeout(Duration::from_secs(10))
+        .set(
+            "User-Agent",
+            concat!("dsh-desk/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .ok()
+        // into_json reports body errors as io::Error, not ureq::Error —
+        // hence the separate .ok() instead of one and_then chain.
+        .and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .and_then(|releases: serde_json::Value| {
+            releases.as_array().and_then(|list| list.first().cloned())
+        });
+    let Some(latest) = latest else {
+        log_line("dsh-desk: update check unavailable (network or API) — nothing to do");
+        return;
+    };
+    let tag = latest
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let page = latest
+        .get("html_url")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    match tag_is_newer(tag, &current) {
+        Some(true) => {
+            log_line(&format!(
+                "dsh-desk: release {tag} is newer than this build ({current}) \
+                 — opening the releases page"
+            ));
+            open_external(app, page, "releases page");
+        }
+        Some(false) => log_line(&format!(
+            "dsh-desk: no newer release than {current}; newest published is {tag}"
+        )),
+        None => log_line(&format!(
+            "dsh-desk: release tag `{tag}` is not comparable with {current} \
+             — treating as no update"
+        )),
+    }
+}
+
 /// Open a file with its system association; bare `.log`/`.json` files often
 /// have none on Windows, so fall back to notepad.
 fn open_in_viewer(app: &AppHandle, path: &Path) {
@@ -838,10 +1003,24 @@ pub fn run() {
             let restart = MenuItem::with_id(app, "restart", "Restart server", true, None::<&str>)?;
             let edit_config_item =
                 MenuItem::with_id(app, "edit-config", "Edit config", true, None::<&str>)?;
+            let check_updates = MenuItem::with_id(
+                app,
+                "check-updates",
+                "Check for updates",
+                true,
+                None::<&str>,
+            )?;
             let quit = MenuItem::with_id(app, "quit", "Quit (stop server)", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show, &open_browser, &restart, &edit_config_item, &quit],
+                &[
+                    &show,
+                    &open_browser,
+                    &restart,
+                    &edit_config_item,
+                    &check_updates,
+                    &quit,
+                ],
             )?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
@@ -871,6 +1050,7 @@ pub fn run() {
                     }
                     "restart" => restart_server(app),
                     "edit-config" => edit_config(app),
+                    "check-updates" => check_for_updates(app),
                     "quit" => {
                         let state = app.state::<ServerState>();
                         state.exiting.store(true, Ordering::SeqCst);
@@ -1088,5 +1268,44 @@ mod tests {
         *state.url.lock().unwrap() = None;
         state.next_generation(); // a restart superseded this attempt
         assert!(!is_still_starting(&state, gen));
+    }
+
+    // ── S5a: release-tag comparison ────────────────────────────────────
+
+    #[test]
+    fn release_tags_compare_numerically() {
+        assert_eq!(tag_is_newer("v0.1.1", "0.1.0"), Some(true));
+        assert_eq!(tag_is_newer("v0.2.0", "0.1.9"), Some(true));
+        assert_eq!(tag_is_newer("v1.0.0", "0.9.9"), Some(true));
+        assert_eq!(
+            tag_is_newer("v10.0.0", "9.0.0"),
+            Some(true),
+            "numeric comparison, not lexical"
+        );
+        assert_eq!(tag_is_newer("v0.1.0", "0.1.0"), Some(false));
+        assert_eq!(
+            tag_is_newer("0.1.0", "v0.1.1"),
+            Some(false),
+            "argument order matters"
+        );
+        // Uncomparable tags never claim an update.
+        assert_eq!(tag_is_newer("nightly", "0.1.0"), None);
+        assert_eq!(tag_is_newer("v0.1", "0.1.0"), None);
+        assert_eq!(tag_is_newer("", "0.1.0"), None);
+    }
+
+    #[test]
+    fn prerelease_tags_follow_semver_ordering() {
+        // A newer number line wins even when its release is a prerelease.
+        assert_eq!(tag_is_newer("v0.2.0-rc1", "0.1.0"), Some(true));
+        assert_eq!(tag_is_newer("v0.1.1-rc1", "0.1.0"), Some(true));
+        // But the plain release outranks its own prereleases.
+        assert_eq!(tag_is_newer("v0.1.0-rc1", "0.1.0"), Some(false));
+        assert_eq!(tag_is_newer("v0.1.0", "0.1.0-rc1"), Some(true));
+        // Numeric identifiers compare by value, not lexically.
+        assert_eq!(tag_is_newer("v0.1.0-rc.2", "0.1.0-rc.10"), Some(false));
+        // A prefix sorts below its extensions (semver rule 11.4).
+        assert_eq!(tag_is_newer("v0.1.0-rc.1", "0.1.0-rc"), Some(true));
+        assert_eq!(tag_is_newer("v0.1.0-rc.1", "0.1.0-rc.1"), Some(false));
     }
 }
