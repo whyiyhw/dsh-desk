@@ -14,7 +14,7 @@
 graph TD
     subgraph DESK["dsh-desk.exe — Tauri 2 shell (src-tauri/src/lib.rs, 354 行)"]
         WIN["主窗口 main<br/>1440×920, 启动时隐藏<br/>初始页: src/index.html 转圈"]
-        TRAY["托盘<br/>菜单: Show / Open in browser / Restart / Quit<br/>左键单击 = 切换窗口显隐"]
+        TRAY["托盘<br/>菜单: Show / Open in browser / Restart /<br/>Edit config / Check for updates / Quit<br/>左键单击 = 切换窗口显隐"]
         HK["全局热键 Alt+Shift+D<br/>(硬编码, lib.rs:332)"]
         SI["single-instance 插件<br/>二次启动 → show + 聚焦已有窗口"]
         SS["ServerState<br/>child: Mutex&lt;Option&lt;Child&gt;&gt;<br/>url: Mutex&lt;Option&lt;String&gt;&gt;"]
@@ -181,7 +181,7 @@ stateDiagram-v2
 
 - **问题**:G6。
 - **方案**:
-  - **S5a(Phase 2,默认路径)**:托盘 **Check for updates** → `GET /repos/{owner}/{repo}/releases/latest` → 与内置版本比对 → 有新版则打开 Releases 页(opener)。约 30 行,无签名密钥、无密钥管理负担,满足成功标准 #3;
+  - **S5a(Phase 2,默认路径)**:托盘 **Check for updates** → `GET /repos/{owner}/{repo}/releases?per_page=1` 取最新一条(2026-09-05 修订:原稿 `/releases/latest` 不含 prerelease,与下述"用 prerelease 测验收"自相矛盾;列表端点含 prerelease,draft 对未认证读取不可见)→ 与内置版本按 semver 比对(含 `-rc1` 预发布后缀;同号下纯发布 > 预发布)→ 有新版则打开 Releases 页(opener)。约 60 行,无签名密钥、无密钥管理负担,满足成功标准 #3;
   - **S5b(Phase 3,可选,门禁 Q2)**:tauri-plugin-updater 原地升级,签名公钥内置、私钥妥善保管。**明确失败模式:私钥丢失 = 已发布客户端(内置公钥)永远无法原地升级**,用户被晾在旧版——单人维护者若不愿承担密钥管理,永久停在 S5a 是完全正当的选择。
 - **验收**:S5a——在真实仓库发一个更高版本号的 **prerelease**(draft 对 API 不可见,不能用 draft 测),旧安装能检出并打开 Releases 页。S5b——假版本升级走通且签名校验生效。
 - **涉及**:lib.rs(托盘项 + 网络请求)、tauri.conf.json(S5b)、CI(S5b 产物)。
@@ -199,7 +199,7 @@ stateDiagram-v2
 - **方案**:
   1. **README 增加 Install from release 节**:最低 Windows 版本(建议 Win10+);SmartScreen/杀软误报说明("仅从官方 Releases 下载");前置条件 = 已装 dsh;**Support 节** = GitHub Issues + 附 `%APPDATA%/dsh-desk/dsh-desk.log`(S1 脱敏落地后此文件才可安全外发);
   2. **版本真源**:tauri.conf.json 的 version 为唯一真源,tag 时 bump;Cargo.toml / package.json 的版本字段随真源同步(或 README 声明它们不追踪);
-  3. **WebView2 决策**:默认 downloadBootstrapper 装机需联网;选 `embedBootstrapper`(离线可用,安装包变大)并在 README 注明体积原因;
+    3. **WebView2 决策(2026-09-05 勘误)**:选 `embedBootstrapper`(安装包 +约 1.8MB,README 注明)——原稿称其"离线可用"有误,官方语义为装机装运行时**仍需联网**,仅内嵌引导器本身;真离线只有 `offlineInstaller`(+约 127MB)可做到,未选(体积代价大,离线机器罕见)。离线/无运行时机器由 README 指引先手工装独立运行时包(fwlink 2124701),"已装但过旧"由 S4/G12 应用内门禁兜底;若社区出现真实离线装机需求,一行配置可翻为 offlineInstaller;
   4. **FAQ 预期差条目(2026-09-05 增补,用户实测提出)**:「浏览器打开 `http://127.0.0.1:<port>/` 显示 *dsh web authentication required*」不是故障——dsh 服务端要求**首次访问必须带 token**(`/?token=…` 换 30 天 cookie),裸 `/` 无凭证必 401。正确入口:桌面壳窗口(内部自动完成 token 交换,免手工);外部浏览器走**托盘 Open in browser**(带完整 URL 打开默认浏览器)。S1 脱敏后日志/终端不再出现带 token 的 URL,属故意设计(token 入日志=泄露),README 需向社区说明"从日志抄 URL"这条路已关闭。
 - **验收**:一名非技术 Windows 用户**仅按 README** 从 Releases 完成安装并到达 Ready。
 - **涉及**:README.md、tauri.conf.json(构建脚本的版本同步策略)。
@@ -220,7 +220,7 @@ stateDiagram-v2
 以下为每次交付前必须人工走查的**可观察契约**(也是 Phase 0 冒烟的记录模板):
 
 1. 就绪行打印后,窗口显示并导航到认证 GUI(无 token 手工介入);
-2. 托盘四项菜单全部可用:Show(切换显隐)/ Open in browser(打开认证页)/ Restart / Quit;
+2. 托盘菜单全部可用:Show(切换显隐)/ Open in browser(打开认证页)/ Restart / Edit config(S4)/ Check for updates(S5a)/ Quit;
 3. 热键 Alt+Shift+D 从任意应用切换窗口;
 4. 二次启动唤起并聚焦已有窗口;
 5. 关窗 → 隐藏到托盘,server 继续运行;
@@ -240,7 +240,7 @@ graph LR
 | Phase | 目标 | 交付 | 验收门 | 依赖 |
 |-------|------|------|--------|------|
 | **0 · 立整基线**(半天) | 冻结基线,定义回归契约 | 处置未跟踪的 `ws-probe.cjs`(删或提交);提交 `docs/`(本文档);本机 `pnpm tauri build` + 真机启动冒烟一次,按 §2.4 记录基线;顺手落 push 触发的 bare `cargo check` CI | `git status` 干净;冒烟记录在案;CI 绿 | — |
-| **1 · 可靠性**(1-2 天) | 失败全部可见、可操作、可脱敏 | S1(被动提示 + 超时降级 + 前缀放宽 + 日志脱敏)+ S2(代数标记 + 串行化重试);**行动项:在 deepseek-harness 上游提 issue 确认就绪行格式是否为稳定接口(原 Q3,Phase 2 发布前必须有答案)** | S1/S2 验收标准逐条通过;§2.4 契约走查通过 | Phase 0 |
+| **1 · 可靠性**(1-2 天) | 失败全部可见、可操作、可脱敏 | S1(被动提示 + 超时降级 + 前缀放宽 + 日志脱敏)+ S2(代数标记 + 串行化重试);~~行动项:上游 issue 确认就绪行稳定性~~(原 Q3 已关闭——上游 issue 区禁用且明确不接受外部 PR,见 §5 2026-09-05 行) | S1/S2 验收标准逐条通过;§2.4 契约走查通过 | Phase 0 |
 | **2 · 分发闭环**(2-3 天) | 社区用户装得上、首跑有人接、坏得起有日志 | S3 CI+安装包、S4 首跑引导、S6 图标、S12 发布物料、S5a 轻量更新检查 | 各项验收标准;干净 Windows 虚机**仅按 README** 装包到 Ready(含离线 WebView2 场景) | Phase 1(失败态/脱敏是引导态与外发日志的前提) |
 | **3 · 升级与打磨**(按需) | 版本可演进(或明确不演进) | S5b 原地自动更新(门禁 Q2,可选)+ P2 择优(S9/S13 最可能) | S5b 验收(若启用);§2.4 契约 | Phase 2;Q2 决策 |
 
@@ -278,8 +278,8 @@ stateDiagram-v2
 - **Existing Repo Context** (inspected at `5e0c2af`, pushed): two commits (`101b492` initial shell; `5e0c2af` "Fix double-appended args; log to file; direct-exe spawn with cmd fallback"); tracked tree clean; untracked: `docs/` (this spec) and `ws-probe.cjs` (scratch probe, to resolve in Phase 0). `src-tauri/src/lib.rs` is 354 lines (server lifecycle, tray, hotkey, single instance). Also inspected: main.rs, tauri.conf.json (window 1440×920 hidden start, CSP null, targets all), capabilities/default.json (core/opener/global-shortcut defaults), src/index.html (spinner), package.json, README. Line anchors are snapshot pointers at this commit.
 - **Required Deliverables**: Phase 0 — resolve ws-probe.cjs, commit docs/, build+launch smoke per §2.4, push-CI cargo check; Phase 1 — S1+S2 code changes + upstream stability issue filed; Phase 2 — .github/workflows, first tagged release, onboarding UI states, icon set, README release/support sections, versioning policy, WebView2 decision, S5a; Phase 3 — optional S5b, P2 picks.
 - **Acceptance Criteria**: per-item in §2.3; global: §2.4 contract intact; every failure mode visible and actionable ≤90s; logs contain no auth tokens; rapid-Restart×10 then Quit leaves zero dsh/node processes; clean Windows VM reaches Ready following only README.
-- **Risks**: dsh may change the readiness-line wording (mitigated: visible degradation + tolerant split match + upstream confirmation issue); auth token in mirrored logs (mitigated by S1 redaction BEFORE any release artifact ships); unsigned installers → SmartScreen/AV friction (Q1); S5b signing-key loss strands old clients on their built-in pubkey (explicitly accepted if S5b skipped); WebView2 offline install; CI Windows cold-build time; docs line anchors rot after Phase 1 edits.
-- **Open Questions**: Q1 code signing (pay for cert vs. accept SmartScreen warning for a community tool); Q2 who holds the S5b updater private key, with the stranding failure mode stated; Q3 upstream readiness-line stability (converted to a Phase 1 action item — issue must be filed and answered before Phase 2 ships); Q4 distribution beyond GitHub Releases (winget?).
+- **Risks**: dsh may change the readiness-line wording (mitigated: visible degradation + tolerant split match — both landed and verified in S1; upstream confirmation unobtainable: issue tracker disabled, external PRs declined, feedback routed to Discussions only, see decision log 2026-09-05); auth token in mirrored logs (mitigated by S1 redaction BEFORE any release artifact ships); unsigned installers → SmartScreen/AV friction (Q1); S5b signing-key loss strands old clients on their built-in pubkey (explicitly accepted if S5b skipped); WebView2 offline install; CI Windows cold-build time; docs line anchors rot after Phase 1 edits.
+- **Open Questions**: Q1 code signing (pay for cert vs. accept SmartScreen warning for a community tool); Q2 who holds the S5b updater private key, with the stranding failure mode stated; Q3 upstream readiness-line stability (CLOSED 2026-09-05: upstream disables its issue tracker, explicitly declines external PRs, and self-describes as developer preview — no stability commitment is obtainable; risk accepted, mitigation = S1 tolerant match + visible degradation, S12 README to document the bet); Q4 distribution beyond GitHub Releases (winget?).
 - **Verification Plan**: manual failure-injection (rename readiness prefix) for S1; rapid-restart-then-Quit process census for S2; clean-VM README-only install smoke for S3/S4/S12; prerelease-based update-check test for S5a (drafts are API-invisible); §2.4 walkthrough as the universal regression gate.
 
 ---
@@ -307,4 +307,5 @@ stateDiagram-v2
 | 2026-09-05 | S4 引导文案决策:**给 dsh 项目页链接**(github.com/deepseek-ai/deepseek-harness,README 已引用的稳定表面),不写死安装命令——安装方式会漂移,与"只依赖稳定表面"的架构赌注一致 | 用户留给 S4 定的开放点,实现时拍板 |
 | 2026-09-05 | **S2 已落地**(代数标记 + 串行化生命周期:spawn/主动 kill/已上报退出各 mint 一代,watcher/timer 只认本代,Restart 与 Retry 同走杀净→等退→再起;`cargo test` 10 passed 含 S2 四条)。回合末独立审查抓到 1×P1(claim_exit 的 child 交接不原子——旧 watcher 微秒窗口可 take 走 Child 无 taskkill 直接 drop,kill 扑空,"EOF≈退出"假设下进程树活过 Quit)已修:child take 移进认领临界区、kill 的 bump 同入 child 锁、EOF 后 try_wait 仍活补杀、已死只 reap 防 pid 复用误杀;4×P2 同批处置。真机验收(判定式逐条):Restart 风暴 10 次效果确认(重试合计 16 周期)→ 清点恒 1 子进程、17 次旧代 EOF 全部 `superseded generation` 静默、`exited` 误报 0(S1 已知边界 1 根治)、终态 Ready;**托盘 Quit 后 dsh/node 零残留**;§2.4 六条全过(并与并行 S4 会话在同合并构建上的独立走查互为交叉证据)。记录见 [verification-2026-09-05-S2.md](verification-2026-09-05-S2.md)。注:S2 验收期间与 S4 会话共享真机/工作树交错(其验证记录有述),本轮所有证据采自 S1+S4+S2 合并构建 | 交付事实记录 + 独立审查 |
 | 2026-09-05 | **Phase 0 完成**:`ws-probe.cjs` 脱敏参数化后提交(原硬编码 token 未进 git 历史);此前各会话交付但未提交的 S1/S2/S4/S6 全部产物分批入库,git status 干净;**release 构建首次冒烟** §2.4 六条契约全过(记录见 [verification-2026-09-05-phase0.md](verification-2026-09-05-phase0.md),含托盘驱动配方 v3:浮层开着时 6002 直投为首选开菜单方式);push CI(bare cargo check,windows-latest)落地 | 交付事实记录 |
+| 2026-09-05 | **Q3 关闭(不可执行 → 风险接受)**:实测上游 deepseek-harness 仓库 `has_issues=false`(issue 区整体禁用,页示 "Issue creation is restricted")、CONTRIBUTING.md 明言 "cannot accept external pull requests at the moment"、反馈唯一入口 = GitHub Discussions(自述小团队未必逐条回复),且 README 自述 developer preview、预期破坏性变更——"提 issue 拿就绪行稳定承诺"既不可执行、也大概率无答案。缓解即 S1 已落地并验证的宽容匹配 + 90s 可见降级;S12 落地时在 README 记录该架构赌注与措辞漂移的故障形态(→降级态可操作)。可选后续:Discussions 发帖询问(外发动作,需用户拍板,不阻塞 Phase 2) | 用户提出 + gh API/CONTRIBUTING 实测核实 |
 | 待定 | Q1 代码签名 / Q2 更新密钥 / Q4 winget | 需用户决策,见 §4 |
