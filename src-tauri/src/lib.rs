@@ -31,13 +31,8 @@ struct DeskConfig {
 impl Default for DeskConfig {
     fn default() -> Self {
         Self {
-            command: "pnpm".into(),
-            args: vec![
-                "dsh".into(),
-                "--profile".into(),
-                "web".into(),
-                "--no-open".into(),
-            ],
+            command: "dsh".into(),
+            args: vec!["--profile".into(), "web".into(), "--no-open".into()],
             cwd: None,
         }
     }
@@ -47,6 +42,30 @@ fn config_path() -> Option<PathBuf> {
     std::env::var("APPDATA")
         .ok()
         .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("config.json"))
+}
+
+fn log_path() -> Option<PathBuf> {
+    std::env::var("APPDATA")
+        .ok()
+        .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("dsh-desk.log"))
+}
+
+/// Append one line to the log file. The release build is a GUI-subsystem
+/// binary with no console, so the file is the only durable diagnostic sink;
+/// when a console is attached (`tauri dev`), the line goes there too.
+fn log_line(line: &str) {
+    println!("{line}");
+    eprintln!("{line}");
+    if let Some(path) = log_path() {
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{line}");
+        }
+    }
 }
 
 fn load_config() -> DeskConfig {
@@ -103,15 +122,39 @@ fn kill_server(state: &ServerState) {
 /// to this process's console for diagnosis.
 fn spawn_server(app: AppHandle) {
     let config = load_config();
-    let mut command = Command::new(&config.command);
-    command
-        .args(&config.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(cwd) = &config.cwd {
-        command.current_dir(cwd);
-    }
-    let mut child = match command.spawn() {
+    // Windows: a `.cmd`/`.bat` shim (installed dsh, pnpm) cannot be executed
+    // by std::process directly; route through cmd.exe when the direct spawn
+    // refuses. A real executable (node.exe) spawns without the detour.
+    let mut build = |via_cmd: bool| {
+        let mut command = if via_cmd && cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.arg("/C").arg(&config.command);
+            command
+        } else {
+            Command::new(&config.command)
+        };
+        command
+            .args(&config.args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(cwd) = &config.cwd {
+            command.current_dir(cwd);
+        }
+        command
+    };
+    let spawned = build(false).spawn().or_else(|error| {
+        if cfg!(windows)
+            && matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidInput
+            )
+        {
+            build(true).spawn()
+        } else {
+            Err(error)
+        }
+    });
+    let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
             let message = format!(
@@ -119,7 +162,7 @@ fn spawn_server(app: AppHandle) {
                 config.command,
                 config.args.join(" ")
             );
-            eprintln!("{message}");
+            log_line(&message);
             show_message(&app, &message);
             return;
         }
@@ -129,12 +172,17 @@ fn spawn_server(app: AppHandle) {
     let stderr = child.stderr.take();
     let state = app.state::<ServerState>();
     *state.child.lock().unwrap() = Some(child);
+    log_line(&format!(
+        "dsh-desk: started `{} {}` (pid {pid})",
+        config.command,
+        config.args.join(" ")
+    ));
 
     if let Some(stdout) = stdout {
         let app_out = app.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                println!("{line}");
+                log_line(&line);
                 if let Some(url) = line.strip_prefix("dsh web: ") {
                     // The authenticated URL runs to the first space; an LAN
                     // variant may follow in parentheses.
@@ -152,7 +200,7 @@ fn spawn_server(app: AppHandle) {
     if let Some(stderr) = stderr {
         std::thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("{line}");
+                log_line(&line);
             }
         });
     }
@@ -168,10 +216,10 @@ fn server_exited(app: &AppHandle, pid: u32) {
     } else {
         format!(
             "dsh-desk: the dsh server (pid {pid}) exited before printing its URL — \
-             check the console output and the launch command in config.json"
+             see %APPDATA%/dsh-desk/dsh-desk.log and the launch command in config.json"
         )
     };
-    eprintln!("{message}");
+    log_line(&message);
     show_message(app, &message);
 }
 

@@ -23,18 +23,30 @@ pnpm tauri dev
 
 ## Configuration
 
-On first run a default config is written to `%APPDATA%\dsh-desk\config.json` (Windows) — edit it to match your dsh installation:
+On first run a default config is written to `%APPDATA%\dsh-desk\config.json` (Windows) — edit it to match your dsh installation.
+
+With an installed `dsh` on PATH:
 
 ```json
 {
-  "command": "pnpm",
-  "args": ["dsh", "--profile", "web", "--no-open"],
+  "command": "dsh",
+  "args": ["--profile", "web", "--no-open"]
+}
+```
+
+From a source checkout (launch node directly — pnpm's script layer mangles forwarded flags when spawned without an interactive shell):
+
+```json
+{
+  "command": "node",
+  "args": ["--import", "tsx/esm", "apps/cli/src/bin.ts", "--profile", "web", "--no-open"],
   "cwd": "D:\\www\\github\\deepseek-harness"
 }
 ```
 
 - `command` / `args`: how to launch dsh. `--no-open` keeps the default browser from popping up (the window is the browser).
-- `cwd`: optional working directory (a source checkout root, for `pnpm dsh` launches).
+- `cwd`: optional working directory (a source checkout root).
+- The dsh stdout/stderr mirror to `%APPDATA%\dsh-desk\dsh-desk.log`.
 
 ## Notes
 
