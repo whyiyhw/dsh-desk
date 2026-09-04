@@ -1,0 +1,19 @@
+name: cargo check
+
+# Phase 0 baseline CI: cheap compile gate on every push.
+# Full build + installers on tag/PR is S3 (Phase 2) — extend, don't duplicate.
+on: push
+
+jobs:
+  check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo check
