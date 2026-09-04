@@ -133,6 +133,27 @@ fn log_path() -> Option<PathBuf> {
         .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("dsh-desk.log"))
 }
 
+/// S13: past this size the mirrored log rotates at startup (one `.old`
+/// generation kept). The dsh stdout mirror makes this file grow without
+/// bound otherwise.
+const LOG_ROTATE_BYTES: u64 = 512 * 1024;
+
+/// S13: rotate an oversized log to `<name>.old` (dropping any previous
+/// `.old`). Startup is the only safe moment to do this — single-threaded,
+/// no writer holds the file yet. Returns whether a rotation happened.
+fn rotate_log_if_large(path: &Path, threshold: u64) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() < threshold {
+        return false;
+    }
+    let mut old = path.as_os_str().to_os_string();
+    old.push(".old");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(path, old).is_ok()
+}
+
 /// Append one line to the log file. The release build is a GUI-subsystem
 /// binary with no console, so the file is the only durable diagnostic sink;
 /// when a console is attached (`tauri dev`), the line goes there too.
@@ -968,8 +989,20 @@ fn retry_server(app: AppHandle) {
     restart_server(&app);
 }
 
+/// S13: panics go to the log file — a GUI-subsystem binary has no console,
+/// and the file is the only durable sink. Shared with the hook test so the
+/// format cannot drift.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        log_line(&format!("dsh-desk panic: {info}"));
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // S13: route panics to the log early — even a panic during plugin init
+    // should leave a trace.
+    install_panic_hook();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -977,6 +1010,21 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(
+            // S9: remember size/position across launches. VISIBLE is
+            // deliberately excluded — the plugin's restore would show and
+            // focus the window at boot — and so is MAXIMIZED: restoring it
+            // calls maximize() on the still-hidden window, and Win32
+            // SW_MAXIMIZE shows and activates it, breaking the hidden-start
+            // contract (the window appears only when the readiness line
+            // arrives) through another door.
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -996,6 +1044,26 @@ pub fn run() {
             open_webview2_download
         ])
         .setup(|app| {
+            // S13: bound the mirror log first. This runs only in the
+            // surviving instance — a second launch exits inside
+            // single-instance init and must not rotate the live instance's
+            // log. Then the banner: build, binary, and the configured launch
+            // command — the gate paths below return before any "started"
+            // line, so the banner is the one place the command line is
+            // guaranteed to land.
+            if let Some(path) = log_path() {
+                rotate_log_if_large(&path, LOG_ROTATE_BYTES);
+            }
+            let config = load_config();
+            let exe = std::env::current_exe()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| "<unknown>".into());
+            log_line(&format!(
+                "dsh-desk v{} starting ({exe}); launch: `{} {}`",
+                app.package_info().version,
+                config.command,
+                config.args.join(" ")
+            ));
             // ── tray ─────────────────────────────────────────────────────────
             let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
             let open_browser =
@@ -1307,5 +1375,47 @@ mod tests {
         // A prefix sorts below its extensions (semver rule 11.4).
         assert_eq!(tag_is_newer("v0.1.0-rc.1", "0.1.0-rc"), Some(true));
         assert_eq!(tag_is_newer("v0.1.0-rc.1", "0.1.0-rc.1"), Some(false));
+    }
+
+    // ── S13: log rotation & panic hook ────────────────────────────────
+
+    #[test]
+    fn oversized_log_rotates_to_old() {
+        let dir = std::env::temp_dir().join("dsh-desk-rotate-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("dsh-desk.log");
+        let old = log.with_file_name("dsh-desk.log.old");
+        std::fs::write(&log, "x".repeat(2048)).unwrap();
+        assert!(rotate_log_if_large(&log, 1024), "above threshold rotates");
+        assert!(old.exists(), "the rotated generation is kept");
+        assert!(!log.exists(), "the live log is gone until the next write");
+        std::fs::write(&log, "y".repeat(16)).unwrap();
+        assert!(
+            !rotate_log_if_large(&log, 1024),
+            "below threshold stays put"
+        );
+        assert!(log.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn panic_hook_lands_in_the_log() {
+        // The production hook; a caught panic must leave a line in the log
+        // file — a GUI-subsystem binary has no console to print to. The
+        // probe text is marked so a human reading the log knows it came from
+        // the test suite, not a real crash.
+        let previous = std::panic::take_hook();
+        install_panic_hook();
+        let _ = std::panic::catch_unwind(|| panic!("[cargo-test probe] s13 hook"));
+        std::panic::set_hook(previous);
+        let path = log_path().expect("APPDATA is set in the test environment");
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        // PanicHookInfo's Display is "panicked at <location>:\n<message>", so
+        // match the two halves separately.
+        assert!(
+            text.contains("dsh-desk panic: panicked at")
+                && text.contains("[cargo-test probe] s13 hook"),
+            "the panic reached the log file"
+        );
     }
 }

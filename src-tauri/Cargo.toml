@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desk"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop shell for the DeepSeek Harness web GUI"
 authors = ["whyiyhw"]
 edition = "2021"
@@ -21,6 +21,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # S5a update check: blocking HTTP on a worker thread; default TLS is rustls.
 ureq = { version = "2", features = ["json"] }
+# S9 window geometry persistence (size/position/maximized; VISIBLE excluded).
+tauri-plugin-window-state = "2"
 
 [profile.release]
 strip = true

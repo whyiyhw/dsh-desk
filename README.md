@@ -7,6 +7,7 @@ Desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 - **Server lifecycle**: spawns `dsh --profile web` as a child process, watches stdout for the `dsh web: <url>` readiness line (which carries the auth token), then navigates the window to the authenticated GUI. No copy-pasting tokens.
 - **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Edit config / Quit (stops the server).
 - **Global hotkey**: `Alt+Shift+D` shows/hides the window from anywhere.
+- **Window memory**: window size and position persist across launches (maximized state is deliberately not restored — startup stays quiet until the GUI is ready).
 - **Single instance**: a second launch focuses the existing window.
 - **Guided failures**: every dead end turns into an actionable panel — a slow/failed server shows Open log / Open config / Retry; a machine without dsh shows an install guide; a WebView2 runtime older than Chromium 119 shows the runtime-download guide.
 
@@ -65,7 +66,7 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 ## Support
 
 - Bugs and questions: [GitHub Issues](https://github.com/whyiyhw/dsh-desk/issues).
-- Please attach `%APPDATA%\dsh-desk\dsh-desk.log` — every URL in it is redacted down to scheme://host:port, so the auth token never reaches the file.
+- Please attach `%APPDATA%\dsh-desk\dsh-desk.log` — every URL in it is redacted down to scheme://host:port, so the auth token never reaches the file. On a long-running installation also attach `dsh-desk.log.old`: the log rotates to one `.old` generation when it passes 512 KiB.
 
 ## FAQ
 
