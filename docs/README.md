@@ -9,6 +9,9 @@
 | [verification-2026-09-05-S4.md](verification-2026-09-05-S4.md) | 交付自验 | S4 首跑引导/托盘 Edit config/WebView2 版本门禁:验收三条 + §2.4 六条 + 溢出浮层托盘驱动配方 + 并行会话互踩处置 |
 | [verification-2026-09-05-S2.md](verification-2026-09-05-S2.md) | 交付自验 | S2 生命周期代数标记:Restart 风暴 16 周期/Quit 零残留验收 + P1(child 交接原子性)审查修复 + Chrome 焦点杀手/浮层格子漂移 |
 | [verification-2026-09-05-phase0.md](verification-2026-09-05-phase0.md) | 阶段基线 | Phase 0 立整基线:release 构建冒烟 §2.4 六条 + 托盘驱动配方 v3(6002 直投) |
+| [verification-2026-09-05-S3.md](verification-2026-09-05-S3.md) | 交付自验 | S3 CI+安装包:tag→Release 链路(v0.1.0 已发)+ 安装版 §2.4 六条 + prerelease fixture 流程 |
+| [verification-2026-09-05-S12.md](verification-2026-09-05-S12.md) | 交付自验 | S12 发布物料:README 四节 + embedBootstrapper 语义勘误 + 版本真源 CI 守卫 |
+| [verification-2026-09-05-S5a.md](verification-2026-09-05-S5a.md) | 交付自验 | S5a 更新检查:semver 全序 + 负向/正向真机验收(v0.1.1 fixture 打开 Releases 页) |
 
 ## 命名约定(即分类)
 

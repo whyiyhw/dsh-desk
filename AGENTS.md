@@ -5,7 +5,7 @@
 
 ## 项目一句话
 
-Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 token 的 URL → 导航 WebView2 窗口。核心逻辑在 `src-tauri/src/lib.rs`（约 350 行）。
+Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 token 的 URL → 导航 WebView2 窗口。核心逻辑在 `src-tauri/src/lib.rs`（S1-S5a 后约 1200 行，含测试）。
 
 ## 规划与规范入口
 
@@ -56,6 +56,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
   9. **配方 v3（Phase 0 冒烟沉淀，成品 `%TEMP%\p0-smoke\p0-tray2.ps1`）：浮层开着时 6002 直投是首选开菜单方式**——`PostMessage(tray_icon_app, 6002, uID, WM_RBUTTONUP)`，不动物理鼠标，Phase 0 四次菜单动作（Show/Restart/Open-browser/Quit）全部一次命中；**物理右键在用户在场时不稳**（同机同位置四轮 no-menu，即第 4 条"菜单秒关"模式），降级为兜底。**uID 实测为 2**，别假设是 1，仍按 1..8 扫描取首个 `hr=0 且 T<任务栏顶` 的。
   10. **`FindWindowW('Tauri Window')` 本机返回 0，但 EnumWindows+GetClassName 能看到该窗口**（跨 DPI 感知上下文的 Win10 怪癖）——窗口查找/可见性判据一律走 EnumWindows，别用 FindWindowW。
   11. **`MainWindowHandle` 不能当可见性代理**：主窗口隐藏后会回退到 single-instance 插件的可见辅助窗口（类名 `com.whyiyhw.dshdesk-sic`），句柄非 0——判可见性用第 10 条的 EnumWindows + `IsWindowVisible`。
+  12. **S5a 后托盘菜单为 6 项**（Show / Open in browser / Restart / Edit config / Check for updates / Quit），行数写死 5 的旧脚本会点错行——Phase 2 会话成品 `%TEMP%\p2-smoke\tray.ps1` 已参数化 `-Rows`（默认 6），同目录还有 launch/census/hotkey/second/close/winvis/walkthrough 全套（launch/second 的 exe 路径已参数化，可指向安装版）。
 - **并行 ZCode 会话共用真机是"启动即退出"的另一来源**（S4 实测）：对面会话分离式启动的实例占住 single-instance 锁，我的测试实例被静默弹回（无任何日志）。**每个测试阶段前都清点 `Get-Process dsh-desk`**，不能只在开工时查一次；对工作树的共享编辑（lib.rs/docs/AGENTS.md）每次写前重读。
 - **并行会话在场时,环境谜题排障第一步是"读对面刚落盘的东西"**（S2 教训，浪费约 40 分钟）：托盘图标"消失"、6002 失效等怪象排查前，先 `ls docs/` 看有没有并行会话的新验证记录、`tail dsh-desk.log` 找外国实例轨迹指纹（例：日志里 `WebView2 runtime 118.0.9999.0` = S4 的注册表测试正在进行；低代数号的 `superseded generation` = 别的会话的新实例）。共享真机上，docs/ 与共享日志是排障第一现场。
 - **残留的 `pnpm tauri dev` 监视链会复活实例**：改源码触发 watcher 重编译重启，吃掉新构建并干扰测试。开测前 `tasklist` 查 `pnpm→node tauri.js→cargo→dsh-desk` 链整树 `taskkill /T /F`；杀 pnpm 前先认命令行，别误杀用户自己的 `pnpm dsh --profile web`。
@@ -77,7 +78,17 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - `pnpm tauri icon <svg>` 直接吃 SVG（内置 resvg），默认**额外产出 `ios/`、`android/` 子目录**，Windows 优先项目每次生成后记得删。
 - **视觉类交付（图标/UI/截图）必须由"能看见的复核者"逐轮目检**：cursor-agent 盲画字母贝塞尔两轮自报成功（v1 读作 "D21"、R1 读作 "bsP"），全靠看图推翻；改用 opentype.js 提取系统字体轮廓（`C:\Windows\Fonts\segoeuib.ttf`）一次收敛。agent 自报成功 ≠ 正确。
 - cursor-agent CLI：官方二进制在 `%LOCALAPPDATA%\cursor-agent`（已登录）；npm 的 `cursor-agent` 包是同名第三方库（`bin` 为空），勿装。无头用法 `-p "…" --force --trust --output-format stream-json`；它会加载 `~/.cursor/mcp.json`，其中 `ones`（mcp-remote OAuth）会**卡死无头会话**——已在 CLI 侧 `mcp disable` 两个服务器（IDE 不受影响，恢复用 `cursor-agent mcp enable <名>`）。判断它是否真在干活：看盘上文件时间戳 + stream-json 事件，**别看主进程 CPU**（常年接近 0，worker 才干活）。
-- S6 验收记录见 [docs/verification-2026-09-05-S6.md](docs/verification-2026-09-05-S6.md)；真机托盘实时目视与开始菜单目视（依赖 S3 安装包）未做。
+- S6 验收记录见 [docs/verification-2026-09-05-S6.md](docs/verification-2026-09-05-S6.md)；真机托盘实时目视与开始菜单目视已于 2026-09-05 在 S3 安装包上补齐（exe 内嵌图标抽取 + 溢出浮层截图，见 [verification-2026-09-05-S3.md](docs/verification-2026-09-05-S3.md)）。
+
+### S3/S12/S5a 发布链路（Phase 2 交付沉淀，2026-09-05）
+
+- **发版流程**：三处版本（tauri.conf.json 真源 / Cargo.toml / package.json）bump 一致 → commit main → `git tag vX.Y.Z && git push origin vX.Y.Z` → release.yml 自动全量构建并把 NSIS/MSI 挂上 Release（build≈9 分钟冷缓存）。**CI 守卫会拒绝 tag 与树内版本不符的构建**——这是特性不是障碍。
+- **prerelease 验收 fixture 的正确姿势**（不能随手打 tag）：开分支 bump 版本 → push → `gh release create vX.Y.N --target <分支> --prerelease` → tag 推送自动触发 cascade 构建，softprops 对预建 release **保留 prerelease 标记、只追加资产**（实测）→ 测完按 **release → 远端 tag → 分支** 顺序删。
+- **PowerShell 5.1 的 `Set-Content -Encoding UTF8` 写 BOM**，会把 JSON 弄坏（`JSON.parse` 遇 `﻿` 直接崩）——改写文件用 `[System.IO.File]::WriteAllText($f, $t, (New-Object System.Text.UTF8Encoding $false))`。
+- **Git Bash 里 `$TEMP` 是 MSYS 路径（/tmp/...）**，直接传给 `powershell -File` 会报"文件不存在"——先 `cygpath -w` 转 Windows 路径；同理复杂的 PowerShell 内联命令别在 bash 双引号里写（`$_`、反引号转义连环坑），写 .ps1 文件再 `-File` 执行。
+- **NSIS 静默卸载**：`uninstall.exe /S "_?=C:\...\dsh-desk"`（`_?=` 必须绝对路径且为最后一个参数，使卸载器原地同步运行，`-Wait` 才有意义）；卸载器删不掉自身所在目录（NSIS 常态），`Remove-Item` 手动清。Tauri NSIS 默认 currentUser 安装到 `%LOCALAPPDATA%\dsh-desk`。
+- **embedBootstrapper 语义**（官方 schema）：装机装运行时**仍需联网**，只是内嵌引导器（+~1.8MB）；真离线只有 offlineInstaller（+~127MB，未选）。README 已如实描述。
+- **本会话视觉复核链路再次确认**：Read 本地 PNG → 返回 CDN URL → `analyze_image`（icon 与浮层截图两张都走通）；托盘 20px 图标的定性描述（"蓝块+dsh 字样"）够用，坐标断言仍然不可信（第 7 条不变）。
 
 ## 调试方法论教训（本次事故浓缩）
 
@@ -121,4 +132,4 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 
 - `ws-probe.cjs` 是本次的服务端探针脚本（token→cookie→WS 握手一条龙），排查连接类问题可直接复用；`ws` 包在 harness 仓库 `packages/api/gateway/node_modules/ws`，不在本仓库。
 - 用户级 EdgeUpdate 日志：`%TEMP%\MicrosoftEdgeUpdate.log`；MSI/EXE 详细日志加 `/l*v`。
-- **「浏览器裸 URL → 401」是设计行为，不是 bug**（用户实测提出，社区大概率复问）：dsh 服务端要求首访带 token（`/?token=…` 换 30 天 cookie），裸 `/` 必 401 "dsh web authentication required"。桌面壳窗口内部自动完成交换（免手工）；外部浏览器走**托盘 Open in browser**；S1 脱敏后日志/终端拿不到 token URL（故意，token 入日志=泄露）。做支持/排障先分清用户看的是壳窗口还是外部浏览器。FAQ 物料归 S12（spec §2.3 条目 4）。
+- **「浏览器裸 URL → 401」是设计行为，不是 bug**（用户实测提出，社区大概率复问）：dsh 服务端要求首访带 token（`/?token=…` 换 30 天 cookie），裸 `/` 必 401 "dsh web authentication required"。桌面壳窗口内部自动完成交换（免手工）；外部浏览器走**托盘 Open in browser**；S1 脱敏后日志/终端拿不到 token URL（故意，token 入日志=泄露）。做支持/排障先分清用户看的是壳窗口还是外部浏览器。FAQ 已落地 README（2026-09-05，S12）。
