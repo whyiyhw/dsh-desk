@@ -1,0 +1,16 @@
+#!/bin/sh
+# dsh-desk pre-commit 快检(约定执行梯度第 4 级:错一行就污染仓库的才用 hook 硬拦)
+# 设计约束(吸收自 IoT 后端经验 规范3/规范7):
+#   - 只跑秒级快检(fmt),绝不跑构建/测试——慢检查会被绕过,等于没有;cargo check 归 CI(S3)
+#   - 失效形态处置:fmt 违规可逆 → 工具缺失/脚本报错一律警告放行(fail-open),外环兜底;
+#     只有 fmt 明确不过才拦(fail-close)
+set -u
+if ! command -v cargo >/dev/null 2>&1; then
+    echo "[pre-commit] cargo 不在 PATH,警告放行(格式问题由 CI 兜底)" >&2
+    exit 0
+fi
+root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+if ! (cd "$root/src-tauri" && cargo fmt --check >/dev/null 2>&1); then
+    echo "[pre-commit] cargo fmt --check 不过:在 src-tauri/ 下跑 cargo fmt 后重试。" >&2
+    exit 1
+fi
