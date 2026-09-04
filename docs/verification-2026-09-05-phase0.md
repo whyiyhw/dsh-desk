@@ -52,7 +52,9 @@
 
 ## CI 结果
 
-（push 后回填：run URL + 结论）
+**绿**。Run [33905299622](https://github.com/whyiyhw/dsh-desk/actions/runs/33905299622)（`acf78fe` push 触发，windows-latest，cargo check + Swatinem 缓存）：completed / success。唯一 annotation 为 actions/checkout@v4 的 Node 20 弃用提示（informational，非失败）。
+
+附注：push 凭证走 gh 双账号（本机 keyring 同时存 oxpxo 与 whyiyhw，仓库属 whyiyhw）——`gh auth switch` 临时切活跃账号 + `git -c credential.helper='!gh auth git-credential'` 单命令内生效，推完即切回，全局配置零改动。
 
 ## 一句反思
 
