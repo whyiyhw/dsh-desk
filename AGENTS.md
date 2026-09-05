@@ -72,6 +72,19 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **就绪计数基线会被 S13 日志轮转作废**：启动前取的 `'dsh web: http'` 计数基线在轮转后（新日志从零计）永远追不上，launch 类脚本必须在启动后（等轮转落定）重取基线；就绪与可见的先后判据用"首次可见瞬间日志里是否已有就绪行"，别用两个轮询时间戳相减（同周期内先盖 visible 戳是测量伪影，曾 1ms 假违约）。成品 `%TEMP%\p3-smoke\launch-probe.ps1`。
 
 
+### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
+
+> 完整复盘见 [docs/postmortem-2026-09-05-host-hyperv-broken.md](docs/postmortem-2026-09-05-host-hyperv-broken.md)。一句话：**本机 Hyper-V 载荷停留在 2020 版**（vmms/vmcompute 19041.320、vmbus.sys RTM .1、vmbusroot.sys 缺失，内核 .6456）——任何 guest 活不过 90 秒（Gen1 冻结、Gen2 Worker 18508 自关机）、心跳永不连，Docker Desktop 的 VM 自 09-01 起报同款 33101；DISM/SFC 报健康、功能禁用重启用重展开同版旧货、重启无效。**Phase 2 虚机门禁已按用户决策放弃执行**，想跑 VM 相关验证先修宿主（就地修复升级）或换机。
+
+- **「所有 guest 都活不过一分钟」= 先做宿主二进制版本审计**（`Get-Item vmms.exe/vmcompute.exe/vmbus.sys/ntoskrnl.exe` 的 VersionInfo 一组对比），这轮它本可以是第一条命令。
+- **guest 屏幕 ground truth = WMI `GetVirtualSystemThumbnailImage`**（root\virtualization\v2；成品 `D:\tmp\vm-gate\vm-gate-diag7c.ps1`）：vmconnect 窗口会缩放/掉线/自退出，全不可靠；帧对比用逐像素 diff，相同字节=内容未变（CDN 上传也按字节去重，喂视觉前先重编码换名）。
+- **Worker 事件 18508/18514 = "谁杀了 VM"的第一手证据**；WinPE 冻结定位用「startnet 插桩 + 日志落 VHDX 数据分区 + 宿主挂盘回读」（RAM 盘 X: 的日志断电即失）。
+- **免交互装 VM 的正道 = WinPE(boot.wim idx1) apply 进 VHDX + startnet.cmd 探盘符拉 `setup.exe /unattend:`**，配 IMAPI2 自制应答数据 ISO；El Torito "press any key" 抢键（AppActivate/SendKeys/物理点击）三种姿势全不稳，别浪费时间。
+- 离线部署 BCD 的 `{default}` device/osdevice 必须改 `partition=C:`（guest 上下文盘符），否则 0xc000000f 黑屏。
+- 宿主 Startup 文件夹受 Defender 受控文件夹访问保护（提权 Copy-Item 也拒）；沙箱对用户配置目录只读——自启用 HKCU Run 键，文件一律先落 D:\tmp。
+- `D:\tmp\vm-gate\` 保留全套（脚本/ISO/安装包/全程日志），换机跑同一门禁直接复用；runbook 见其中 RESUME.md。
+
+
 ### S2 生命周期代数（S2 交付沉淀，2026-09-05）
 
 - lib.rs 生命周期语义自此由代数标记统治：spawn/主动 kill/已上报退出各 mint 一代，watcher/timer 只认本代；Restart 与 Retry 同走 `run_lifecycle_cycle` 串行路径（杀净→等退→再起）。**日志里 `superseded generation (N)` 的 N 单调递增，可反推生命周期轨迹**——排障时它是"谁杀了谁"的第一手证据。
