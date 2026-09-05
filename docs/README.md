@@ -14,6 +14,7 @@
 | [verification-2026-09-05-S5a.md](verification-2026-09-05-S5a.md) | 交付自验 | S5a 更新检查:semver 全序 + 负向/正向真机验收(v0.1.1 fixture 打开 Releases 页) |
 | [verification-2026-09-05-S9.md](verification-2026-09-05-S9.md) | 交付自验 | S9 窗口状态记忆:MAXIMIZED 显示隐藏窗口的 P1 审查修复 + 几何持久化/hidden-start 真机回归 |
 | [verification-2026-09-05-S13.md](verification-2026-09-05-S13.md) | 交付自验 | S13 崩溃可诊断:panic hook/横幅(含命令行)/轮转挪 setup 的跨进程理由 + §2.4 六条(v0.2.0) |
+| [verification-2026-09-05-S7.md](verification-2026-09-05-S7.md) | 交付自验 | S7 托盘状态可视化:ready/not-ready 双色 + 意外退出 toast + 审查三修;发布哈希/SmartScreen FAQ 增补;Win+B 开浮层配方 v4(v0.2.1) |
 | [postmortem-2026-09-05-host-hyperv-broken.md](postmortem-2026-09-05-host-hyperv-broken.md) | 事故复盘 | 宿主 Hyper-V 组件库损坏(载荷停 2020 版):Phase 2 虚机门禁放弃执行的完整证据链 + VM 排障仪器/免交互安装配方沉淀 |
 
 ## 命名约定(即分类)

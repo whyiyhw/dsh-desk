@@ -54,7 +54,10 @@ Install 节简注改为指向 FAQ;FAQ 新增条目:为何弹(未知发布者信�
 ## CI 实测(回填区)
 
 - `cargo test`:15 passed(本机)。
-- fixture/正式构建:见下。
+- **v0.2.1 正式构建绿**(run 33940461089,10m05s):NSIS 4,445,951B + MSI 5,718,016B 挂 Release。
+- **Release 正文含 `## SHA-256 checksums` 段**(两文件各一行,自动变更日志拼接在自定义 body 之后,与 softprops/API 语义查证一致)。
+- **端到端校验链实测**:下载 Release 的 setup.exe → `Get-FileHash` 本地复算 = `992b2356e6eb7ae68adfea95c64c89033743e4fc1cbec426aa00bb727c27be7b` = 发布值逐位一致。
+- **发版产物真机冒烟**(NSIS `/S` 安装):横幅 `dsh-desk v0.2.1 starting`、Ready、服务器端口 4 条 ESTABLISHED。
 
 ## 未测项(如实)
 
