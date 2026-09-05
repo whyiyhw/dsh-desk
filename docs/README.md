@@ -2,7 +2,7 @@
 
 | 文档 | 类型 | 说明 |
 |---|---|---|
-| [spec-and-plan.md](spec-and-plan.md) | 规范(唯一真源) | 阶段门禁、S1-S13 规范与验收标准、§5 决策记录 |
+| [spec-and-plan.md](spec-and-plan.md) | 规范(唯一真源) | 阶段门禁、S1-S13 规范与验收标准、S14-S20 UX 债务候选池(择优不承诺)、§5 决策记录 |
 | [postmortem-2026-09-04-webview2-114.md](postmortem-2026-09-04-webview2-114.md) | 事故复盘 | WebView2 运行时冻结在 114,GUI 渲染但"连接异常";升级到 152 的完整踩坑路径 |
 | [verification-2026-09-05-S1.md](verification-2026-09-05-S1.md) | 交付自验 | S1 就绪感知与超时降级:验收四条 + §2.4 六条走查 + 托盘程序化驱动配方 |
 | [verification-2026-09-05-S6.md](verification-2026-09-05-S6.md) | 交付自验 | S6 品牌图标:图标管线缓存坑、cursor-agent CLI 用法 |

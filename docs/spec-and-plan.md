@@ -215,6 +215,20 @@ stateDiagram-v2
 | S11 | 跨平台 | 路径层换 `app_config_dir()`,kill 走进程组 | 社区有 mac/linux 呼声 |
 | S13 | 崩溃可诊断 | `std::panic::set_hook` → log_line;日志启动时写版本横幅与 dsh 命令行;启动时截断/轮转日志(现为无限增长) | Phase 3 |
 
+#### UX 债务候选池(S14-S20,2026-09-05 UI/UX 评审产出,择优不承诺)
+
+> 来源:2026-09-05 对壳层全部用户可见表面(等待页/三块引导面板/托盘/窗口行为/界面文案)的系统 UI/UX 评审。评审判定供参考:失败路径 UX 与状态可见性已达产品级(意外退出 toast、托盘双色、15s/90s 等待梯度、提示不抢焦点),债务集中在**反馈可见性、文案角色分离、视觉身份、可访性**四类。优先级(高/中/低)是评审判定不是排期承诺;与 P2 备选池同规则:择优、不承诺、不入 Phase 门禁。
+
+| # | 优先级 | 项 | 方案要点 | 验收标准(可判定) | 触发条件 |
+|---|---|---|---|---|---|
+| S14 | 高 | 更新检查可见反馈 | Check for updates 三种结果(有新版/已是最新/网络失败)各有用户可见反馈,复用 S7 已落地的 notification 通道。**吸收 S5a 交付记录的已知缺口**(「无更新时无用户可见 UI(S7 范畴)」——S7 落地时未含此项,该备注自此作废) | 点击菜单后三种路径各有可见反馈且不静默(通知失败落日志);有新版行为不变(打开 Releases 页) | 择优即做,体量极小 |
+| S15 | 高 | 面板/日志文案分离 | `show_degraded` 三条消息(spawn 失败/90s 超时/EOF 早退)一稿两用:`dsh-desk:` 日志前缀与 "readiness line" 内部术语直入面板。拆分:log_line 保留机器可 grep 前缀;面板文案按界面语汇重写(情境→原因→下一步,对齐已达标的 onboarding/runtime-old 两条的结构) | 面板渲染文本零 `dsh-desk:` 前缀、零 "readiness line" 措辞;日志行保持前缀(可 grep) | 择优即做 |
+| S16 | 中 | 可访性三件套 | src/index.html:①日志路径文本对比度 4.15:1(12px Consolas `#777`×`#fdf6e3`)→ ≥4.5:1;②按钮边框 `#b9b9b9` 对白底 ≈2:1 → ≥3:1(WCAG 1.4.11);③spinner 增加 `prefers-reduced-motion` 降级。**硬约束:不得引入 outline:none**——现有原生焦点环是键盘可达性承重墙,只许增强不许移除 | 三条逐项判定通过;键盘 Tab 走查焦点环仍可见 | 择优即做,纯 CSS |
+| S17 | 中 | 面板视觉身份 | 品牌资产已存在(design/app-icon.svg:主色 `#4D6BFE`、渐变 `#5B7AFE→#4D6BFE` 仅限品牌标记、Segoe UI Bold 字形)但窗口内表面零呼应。system-ui 在 Windows 即 Segoe UI,字体连续性暗中已成立,只补色/标/刻度:面板头部小尺寸品牌标记+状态词(唯一允许"响"的元素)、spinner/焦点环/主按钮用主色、圆角 8/6、间距 4/8/12/16/24、字号 13/14/16/20;`prefers-color-scheme: dark` 下不闪白。**硬约束:runtime-old 面板必须仍能在旧运行时渲染**(index.html 头注释的自举约束),不引入现代 JS API | 四个面板态(等待/degraded/onboarding/runtime-old)有品牌标记与主色;暗色偏好无白闪;pv 压低到 114 模拟环境(注册表法,同 S4 验收)面板渲染不崩 | 择优;建议与 S16 同批(同文件) |
+| S18 | 中 | 引导态 checkout 填表 | 评审初判"PATH 检测未兑换成体验"经代码核实**仅部分成立**:dsh 在 PATH 时首跑已自动写默认配置直起(load_config 首跑落盘默认),装完 dsh 点 Retry 亦全自动;真实摩擦仅剩源码 checkout 用户(手编 JSON 指 command/args/cwd)。方案:onboarding 面板内嵌受限填表(cwd 必填,command/args 预填 node 直启模板),提交即写 config 并自动 Retry。**注意与 §2.2"不做设置 GUI"非目标的张力**:定位是"引导表单"不是设置界面;若认为越线,裁掉此项零损失 | 无 dsh 机器按填表路径从引导态直达 Ready,全程零手工 JSON 编辑;PATH 用户路径回归不变(§2.4 全过) | checkout 用户真实反馈再议(与 §2.2 一致) |
+| S19 | 低 | 首次进托盘告知 | 首次关窗藏托盘弹一次"仍在后台运行"通知(Discord/Steam 惯例);一次性状态位落点(独立标记文件 vs config 字段)实现时定,**勿污染用户可编辑的 config.json 语义** | 全新安装首次关窗弹一次且仅一次;后续关窗/二次安装零打扰 | 有新用户困惑反馈时优先 |
+| S20 | 低 | 界面语言决策显式化 | 现状全英文文案是隐式决定,显式化为二选一:①英文-only = 正式决策(受众为全球开发者,上游官方语言 en)记 §5;②留 i18n 钩子(文案集中一处)。**决策留给用户拍板**(同 Q1/Q2/Q4 规则),agent 不代决 | 决策行落 §5 且 README/SKILL 措辞一致 | 用户拍板时闭环 |
+
 ### 2.4 正常路径回归契约(替代含糊的"零回归")
 
 以下为每次交付前必须人工走查的**可观察契约**(也是 Phase 0 冒烟的记录模板):
@@ -317,4 +331,5 @@ stateDiagram-v2
 | 2026-09-05 | **Phase 2 虚机门禁仍开放(有据)**:本机排查无可用虚机平台——Hyper-V 功能查询与 Get-VM 均需提权(非提权会话不可用,亦无已建 VM 证据)、无 VirtualBox(VBoxManage 不存在)、无 VMware(vmrun 不存在)、WSL 是 Linux 发行版不适用。干净 Windows 虚机"仅按 README 装包到 Ready"仍是用户资源依赖项,待虚机可用后执行 | 实测排查 |
 | 2026-09-05 | **Phase 2 虚机门禁放弃执行(用户决策)**:自建 Hyper-V 虚机三条路线(离线 dism apply / 官方 setup.exe 自动应答 / 纯 WinPE+startnet)全部死于宿主层——任何 guest ≤90s 冻结或自关机(Worker 18508)、心跳从未连上、Docker Desktop VM 早自 09-01 报 VMbus 协议 0x10004;根因实锤 = **宿主 Hyper-V 组件库载荷停留 2020 版**(vmms/vmcompute .320、vmbus.sys RTM、vmbusroot.sys 缺失)而内核已 .6456,DISM/SFC 报健康、功能禁用重启用重展开同版旧载荷、宿主重启无效。根治 = 就地修复升级(60-90 分钟)或换机,超出门禁合理成本,用户拍板放弃。残余风险(干净机 README 路径无端到端实证)已知并接受,对冲 = S4 两条门禁真机验证 + 安装版 §2.4 六条全过 + CI 绿。完整证据链与沉淀见 [postmortem-2026-09-05-host-hyperv-broken.md](postmortem-2026-09-05-host-hyperv-broken.md);测试资产(D:\tmp\vm-gate 脚本/ISO/安装包)保留备换机复用 | 用户决策 + 取证 |
 | 2026-09-05 | **S7 已落地**(v0.2.1;用户在收尾咨询中点选 ②SmartScreen FAQ + ⑦S7,前 Phase 3 行的"P2 未选"自此作废):意外退出 toast(tauri-plugin-notification,仅当前代数 watcher 触发,失败落日志)+ 托盘 ready/not-ready 双色(灰标=品牌图运行时 Rec.601@55% 合成,无第二资产);验收口径见 §2.3 P2 表 S7 行,真机验收(安装版):running sat=17.5→kill 后 1.1、toast 逐字目验、Restart 后 ready+彩色回归、§2.4 六条全过、`cargo test` 15 passed。独立审查 0×P1、2×P2(toast 错误吞掉→改落日志;spec 缺记录→本行+§2.3 补齐)、1×P3("stopped"措辞在慢启动降级态说谎→改 not-ready)全修。同批范围增补:release 正文 SHA-256(softprops body+generate_release_notes 拼接,已实证实测)+ README SmartScreen FAQ(为何弹/Run anyway 安全依据/certutil 校验)。记录见 [verification-2026-09-05-S7.md](verification-2026-09-05-S7.md) | 交付事实记录 + 用户点选 + 独立审查 |
+| 2026-09-05 | **增补 UX 债务候选池 S14-S20(§2.3 新增小节)**:按 ui-ux-pro-max 方法论对壳层全部用户可见表面做系统 UI/UX 评审(旅程走查/文案审查/状态可见性盘点/可访性清单/视觉方向提案)。高优先两条:更新检查可见反馈(S14,吸收 S5a 交付行"无更新无可见 UI(S7 范畴)"的已知缺口——S7 落地未含,该备注自此作废)、面板/日志文案分离(S15,`dsh-desk:` 前缀与 readiness line 术语泄漏入面板);评审初判"首跑一键配置"经代码核实收窄为 S18(仅 checkout 用户有摩擦,且与 §2.2 非目标有张力,真实诉求再议)。池子择优不承诺、不入 Phase 门禁;S20(界面语言)为开放决策点,留用户拍板 | UI/UX 评审产出 + 用户确认入库 |
 | 待定 | Q1 代码签名 / Q2 更新密钥 / Q4 winget | 需用户决策,见 §4 |
