@@ -598,8 +598,11 @@ fn server_exited(app: &AppHandle, pid: u32, gen: u64) {
     // S7: with the window hidden in the tray, the toast is the ping that
     // makes an unexpected exit visible without hunting for the log. User-
     // initiated stops (Quit, Restart) never reach here — they supersede the
-    // generation before this watcher's EOF lands.
-    let _ = app
+    // generation before this watcher's EOF lands. A failure to show is
+    // logged, not swallowed: on Windows, toasts only work for installed
+    // apps (start-menu shortcut / AUMID), so a dev or portable run failing
+    // here is expected — and must leave a trace.
+    if let Err(error) = app
         .notification()
         .builder()
         .title("DSH Desk")
@@ -607,7 +610,10 @@ fn server_exited(app: &AppHandle, pid: u32, gen: u64) {
             "The dsh server exited unexpectedly. \
              Open the dsh-desk window for what to do next.",
         )
-        .show();
+        .show()
+    {
+        log_line(&format!("dsh-desk: exit toast failed to show: {error}"));
+    }
     // Died before the readiness line → the page is still index.html (maybe
     // still loading): wait for the helper. Died after → the page is the
     // remote dsh GUI where no helper exists: plain text at once.
@@ -706,10 +712,11 @@ fn show_runtime_old(app: &AppHandle, pv: &str) {
     show_panel(app, "deskShowRuntimeOld", &message, true);
 }
 
-/// S7: a gray, dimmed copy of the brand icon — the tray's "server not
-/// running" face. Synthesized at runtime from the bundled icon rather than
-/// shipping a second asset: one source of design truth, and no second copy
-/// for the icon-pipeline cache to serve stale (the S6 lesson).
+/// S7: a gray, dimmed copy of the brand icon — the tray's not-ready face
+/// (starting / degraded / guide / dead). Synthesized at runtime from the
+/// bundled icon rather than shipping a second asset: one source of design
+/// truth, and no second copy for the icon-pipeline cache to serve stale
+/// (the S6 lesson).
 fn gray_image(icon: &tauri::image::Image) -> tauri::image::Image<'static> {
     let mut rgba = icon.rgba().to_vec();
     for px in rgba.chunks_exact_mut(4) {
@@ -724,9 +731,13 @@ fn gray_image(icon: &tauri::image::Image) -> tauri::image::Image<'static> {
     tauri::image::Image::new_owned(rgba, icon.width(), icon.height())
 }
 
-/// Point the tray at the running (colored) or stopped (gray) icon and say
-/// so in the tooltip. Callable from any thread: the update hops to the main
-/// thread, where tray icons must be touched on some platforms.
+/// Point the tray at the ready (colored) or not-ready (gray) face. "Ready"
+/// is the honest reading of what the icon knows: the colored mark means a
+/// readiness line was claimed; the gray one covers starting, degraded-
+/// slow-start (the server may still be alive there), guide states, and a
+/// dead server alike — "stopped" would be a falsehood in the slow-start
+/// case. Callable from any thread: the update hops to the main thread,
+/// where tray icons must be touched on some platforms.
 fn set_tray_status(app: &AppHandle, running: bool) {
     let icon: Option<tauri::image::Image<'static>> = app.default_window_icon().map(|icon| {
         if running {
@@ -736,9 +747,9 @@ fn set_tray_status(app: &AppHandle, running: bool) {
         }
     });
     let tooltip = if running {
-        "DSH Desk — server running"
+        "DSH Desk — ready"
     } else {
-        "DSH Desk — server stopped"
+        "DSH Desk — not ready"
     };
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
@@ -1154,10 +1165,10 @@ pub fn run() {
                 ],
             )?;
             TrayIconBuilder::with_id("main")
-                // S7: boot starts in the stopped face — the colored mark
-                // arrives with the first readiness line (open_gui).
+                // S7: boot starts in the not-ready (gray) face — the colored
+                // mark arrives with the first readiness line (open_gui).
                 .icon(app.default_window_icon().map(gray_image).unwrap())
-                .tooltip("DSH Desk — server stopped")
+                .tooltip("DSH Desk — not ready")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {

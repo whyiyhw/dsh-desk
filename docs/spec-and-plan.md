@@ -208,7 +208,7 @@ stateDiagram-v2
 
 | # | 项 | 一句话方案 | 触发条件 |
 |---|----|-----------|---------|
-| S7 | 托盘状态可视化 | server 意外退出弹系统通知;托盘图标反映 running/stopped | Phase 3 有余量 |
+| S7 | 托盘状态可视化 | server 意外退出弹系统通知;托盘图标反映 running/stopped。**已落地(2026-09-05,v0.2.1)**——验收口径:①仅"当时代数仍当前"的 watcher EOF 才弹 toast(Quit/Restart 的代数超越使其静默,复用 S2 语义);②托盘双色=ready/not-ready(彩色=已认领就绪行;灰=启动中/降级/引导态/已死——"stopped"措辞在慢启动降级态会说谎,故如此命名);③灰标由品牌图运行时合成(Rec.601 亮度 55%,不落第二份资产,规避 S6 图标缓存坑);④toast 失败必须落日志(Windows 下仅安装版可弹,静默失败不可接受);⑤§2.4 六条回归。同批落地(范围增补,记 §5):release 正文发布 SHA-256、README SmartScreen FAQ 含哈希校验 | Phase 3 有余量 → 已触发 |
 | S8 | 热键可配置 | config.json 加 `hotkey` 字段,默认 Alt+Shift+D | 有用户报冲突 |
 | S9 | 窗口状态记忆 | tauri-plugin-window-state | 几乎零成本,顺手 |
 | S10 | 开机自启 | tauri-plugin-autostart,托盘开关 | 用户呼声 |
@@ -316,4 +316,5 @@ stateDiagram-v2
 | 2026-09-05 | **Phase 3:S5b 维持跳过**(默认路径):Q2(更新私钥归属)仍开放,单人维护者不承担"私钥丢失=已发客户端永久搁浅"的密钥管理是 spec 明示的正当选择;S5a 已满足成功标准 #3。若用户未来拍板启用,需:生成密钥+tauri-plugin-updater+CI updater 产物+按 §2.3 S5b 验收。P2 池 S7(托盘气泡反馈)/S8/S10/S11 未选(触发条件未满足:无用户报冲突/无自启呼声/无 mac-linux 呼声) | 决策记录 |
 | 2026-09-05 | **Phase 2 虚机门禁仍开放(有据)**:本机排查无可用虚机平台——Hyper-V 功能查询与 Get-VM 均需提权(非提权会话不可用,亦无已建 VM 证据)、无 VirtualBox(VBoxManage 不存在)、无 VMware(vmrun 不存在)、WSL 是 Linux 发行版不适用。干净 Windows 虚机"仅按 README 装包到 Ready"仍是用户资源依赖项,待虚机可用后执行 | 实测排查 |
 | 2026-09-05 | **Phase 2 虚机门禁放弃执行(用户决策)**:自建 Hyper-V 虚机三条路线(离线 dism apply / 官方 setup.exe 自动应答 / 纯 WinPE+startnet)全部死于宿主层——任何 guest ≤90s 冻结或自关机(Worker 18508)、心跳从未连上、Docker Desktop VM 早自 09-01 报 VMbus 协议 0x10004;根因实锤 = **宿主 Hyper-V 组件库载荷停留 2020 版**(vmms/vmcompute .320、vmbus.sys RTM、vmbusroot.sys 缺失)而内核已 .6456,DISM/SFC 报健康、功能禁用重启用重展开同版旧载荷、宿主重启无效。根治 = 就地修复升级(60-90 分钟)或换机,超出门禁合理成本,用户拍板放弃。残余风险(干净机 README 路径无端到端实证)已知并接受,对冲 = S4 两条门禁真机验证 + 安装版 §2.4 六条全过 + CI 绿。完整证据链与沉淀见 [postmortem-2026-09-05-host-hyperv-broken.md](postmortem-2026-09-05-host-hyperv-broken.md);测试资产(D:\tmp\vm-gate 脚本/ISO/安装包)保留备换机复用 | 用户决策 + 取证 |
+| 2026-09-05 | **S7 已落地**(v0.2.1;用户在收尾咨询中点选 ②SmartScreen FAQ + ⑦S7,前 Phase 3 行的"P2 未选"自此作废):意外退出 toast(tauri-plugin-notification,仅当前代数 watcher 触发,失败落日志)+ 托盘 ready/not-ready 双色(灰标=品牌图运行时 Rec.601@55% 合成,无第二资产);验收口径见 §2.3 P2 表 S7 行,真机验收(安装版):running sat=17.5→kill 后 1.1、toast 逐字目验、Restart 后 ready+彩色回归、§2.4 六条全过、`cargo test` 15 passed。独立审查 0×P1、2×P2(toast 错误吞掉→改落日志;spec 缺记录→本行+§2.3 补齐)、1×P3("stopped"措辞在慢启动降级态说谎→改 not-ready)全修。同批范围增补:release 正文 SHA-256(softprops body+generate_release_notes 拼接,已实证实测)+ README SmartScreen FAQ(为何弹/Run anyway 安全依据/certutil 校验)。记录见 [verification-2026-09-05-S7.md](verification-2026-09-05-S7.md) | 交付事实记录 + 用户点选 + 独立审查 |
 | 待定 | Q1 代码签名 / Q2 更新密钥 / Q4 winget | 需用户决策,见 §4 |
