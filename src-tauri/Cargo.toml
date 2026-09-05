@@ -1,6 +1,6 @@
 [package]
 name = "dsh-desk"
-version = "0.2.0"
+version = "0.2.1"
 description = "Desktop shell for the DeepSeek Harness web GUI"
 authors = ["whyiyhw"]
 edition = "2021"
@@ -23,6 +23,8 @@ serde_json = "1"
 ureq = { version = "2", features = ["json"] }
 # S9 window geometry persistence (size/position/maximized; VISIBLE excluded).
 tauri-plugin-window-state = "2"
+# S7 tray status: system toast when the server dies unexpectedly.
+tauri-plugin-notification = "2"
 
 [profile.release]
 strip = true

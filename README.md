@@ -19,7 +19,7 @@ Windows 10 or newer.
 2. Download the latest `dsh-desk_x.y.z_x64-setup.exe` (NSIS, recommended) or `.msi` from [Releases](https://github.com/whyiyhw/dsh-desk/releases) and run it.
 3. Most Windows 10/11 machines already carry the WebView2 Evergreen runtime (it ships with Edge), so the installer has nothing extra to fetch. An in-app gate also checks the runtime on every launch and walks you through an upgrade if it is older than Chromium 119.
 
-**SmartScreen / antivirus warning**: the installers are not code-signed, so Windows may show "Windows protected your PC". Click *More info → Run anyway* — and only ever download from this repository's Releases page, the one official distribution channel.
+**SmartScreen / antivirus warning**: the installers are not code-signed, so Windows may show "Windows protected your PC". Click *More info → Run anyway* — see the FAQ entry for why that is safe and how to verify your download.
 
 **Machines with no WebView2 runtime and no internet during install** (rare): the installer embeds the small bootstrapper (+~2 MB), but installing the runtime itself still needs internet. On such a machine, first install Microsoft's standalone x64 WebView2 runtime ([go.microsoft.com/fwlink/?linkid=2124701](https://go.microsoft.com/fwlink/?linkid=2124701)) from a connected machine, then run the dsh-desk installer.
 
@@ -70,6 +70,10 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 
 ## FAQ
 
+- **The installer triggers "Windows protected your PC" (SmartScreen). Is it safe to continue?**
+  The warning means Windows has no reputation data for the publisher — dsh-desk ships unsigned installers (a code-signing certificate costs real money and is an open decision), and SmartScreen treats every unknown publisher that way. It is a reputation gap, not a malware detection. Clicking *More info → Run anyway* runs the exact file you downloaded. Two habits keep you safe without a signature:
+  - Download only from this repository's [Releases](https://github.com/whyiyhw/dsh-desk/releases) page — the one official channel. Release artifacts are built by the public CI workflow (`.github/workflows/release.yml`) from the tagged source in the repo, so what you install is reproducible from what you can read.
+  - Verify the download against the checksums in the release notes: each release lists the SHA-256 of every installer, and you can compute yours locally with `certutil -hashfile dsh-desk_x.y.z_x64-setup.exe SHA256`. If the hashes match, the file is bit-for-bit the one CI built.
 - **Opening `http://127.0.0.1:<port>/` in a browser shows "dsh web authentication required".**
   That is by design: the dsh server requires a token on first visit (`/?token=…` exchanges it for a long-lived cookie). Use the app's window (it performs the exchange automatically), or the tray's *Open in browser* (which opens the full authenticated URL). The log deliberately never contains the token URL — a token in a log file is a leak — so "copy the URL from the log" is intentionally not a thing.
 - **The window shows "still starting…", then a panel with buttons.**

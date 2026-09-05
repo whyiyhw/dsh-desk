@@ -44,6 +44,7 @@ use tauri::{
     AppHandle, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
 
 /// The running `dsh` server child, if any. Killing must go through
@@ -460,6 +461,7 @@ fn spawn_server(app: &AppHandle) {
                 config.args.join(" ")
             );
             log_line(&message);
+            set_tray_status(app, false);
             // The page here is index.html (boot, or a Restart that just ran
             // deskReset) — possibly still loading at boot, so wait for it.
             show_degraded(&app, &message, true);
@@ -592,6 +594,20 @@ fn server_exited(app: &AppHandle, pid: u32, gen: u64) {
         )
     };
     log_line(&message);
+    set_tray_status(app, false);
+    // S7: with the window hidden in the tray, the toast is the ping that
+    // makes an unexpected exit visible without hunting for the log. User-
+    // initiated stops (Quit, Restart) never reach here — they supersede the
+    // generation before this watcher's EOF lands.
+    let _ = app
+        .notification()
+        .builder()
+        .title("DSH Desk")
+        .body(
+            "The dsh server exited unexpectedly. \
+             Open the dsh-desk window for what to do next.",
+        )
+        .show();
     // Died before the readiness line → the page is still index.html (maybe
     // still loading): wait for the helper. Died after → the page is the
     // remote dsh GUI where no helper exists: plain text at once.
@@ -656,6 +672,7 @@ fn show_degraded(app: &AppHandle, message: &str, wait: bool) {
 /// config does not point elsewhere yet. Shares the degraded panel's action
 /// mechanism (same invoke/ACL path).
 fn show_onboarding(app: &AppHandle) {
+    set_tray_status(app, false);
     let config_path = config_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "%APPDATA%/dsh-desk/config.json".into());
@@ -676,6 +693,7 @@ fn show_onboarding(app: &AppHandle) {
 /// runtime no matter how healthy the server is. Offer the standalone
 /// installer (see WEBVIEW2_DOWNLOAD_URL) and a way back once it is updated.
 fn show_runtime_old(app: &AppHandle, pv: &str) {
+    set_tray_status(app, false);
     let message = format!(
         "The WebView2 Runtime on this machine is {pv} (Chromium {pv_major}), but \
          the dsh web GUI needs Chromium {WEBVIEW2_MIN_MAJOR} or newer — the window \
@@ -686,6 +704,49 @@ fn show_runtime_old(app: &AppHandle, pv: &str) {
         pv_major = pv.split('.').next().unwrap_or(pv),
     );
     show_panel(app, "deskShowRuntimeOld", &message, true);
+}
+
+/// S7: a gray, dimmed copy of the brand icon — the tray's "server not
+/// running" face. Synthesized at runtime from the bundled icon rather than
+/// shipping a second asset: one source of design truth, and no second copy
+/// for the icon-pipeline cache to serve stale (the S6 lesson).
+fn gray_image(icon: &tauri::image::Image) -> tauri::image::Image<'static> {
+    let mut rgba = icon.rgba().to_vec();
+    for px in rgba.chunks_exact_mut(4) {
+        // Rec.601 luma at 55% brightness: reads as "off" next to the
+        // colored mark even at tray size. Alpha is left alone.
+        let luma = (px[0] as u32 * 30 + px[1] as u32 * 59 + px[2] as u32 * 11) / 100;
+        let dim = (luma * 55 / 100).min(255) as u8;
+        px[0] = dim;
+        px[1] = dim;
+        px[2] = dim;
+    }
+    tauri::image::Image::new_owned(rgba, icon.width(), icon.height())
+}
+
+/// Point the tray at the running (colored) or stopped (gray) icon and say
+/// so in the tooltip. Callable from any thread: the update hops to the main
+/// thread, where tray icons must be touched on some platforms.
+fn set_tray_status(app: &AppHandle, running: bool) {
+    let icon: Option<tauri::image::Image<'static>> = app.default_window_icon().map(|icon| {
+        if running {
+            tauri::image::Image::new_owned(icon.rgba().to_vec(), icon.width(), icon.height())
+        } else {
+            gray_image(icon)
+        }
+    });
+    let tooltip = if running {
+        "DSH Desk — server running"
+    } else {
+        "DSH Desk — server stopped"
+    };
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        if let Some(tray) = app.tray_by_id("main") {
+            let _ = tray.set_icon(icon);
+            let _ = tray.set_tooltip(Some(tooltip));
+        }
+    });
 }
 
 /// Navigate the main window to the authenticated GUI URL.
@@ -699,6 +760,7 @@ fn open_gui(app: &AppHandle, url: &str) {
         let _ = window.set_focus();
         let _ = window.eval(&script);
     }
+    set_tray_status(app, true);
 }
 
 fn toggle_window(app: &AppHandle) {
@@ -1035,6 +1097,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_notification::init())
         .manage(ServerState::new())
         .invoke_handler(tauri::generate_handler![
             open_log_file,
@@ -1091,8 +1154,10 @@ pub fn run() {
                 ],
             )?;
             TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("DSH Desk")
+                // S7: boot starts in the stopped face — the colored mark
+                // arrives with the first readiness line (open_gui).
+                .icon(app.default_window_icon().map(gray_image).unwrap())
+                .tooltip("DSH Desk — server stopped")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -1417,5 +1482,17 @@ mod tests {
                 && text.contains("[cargo-test probe] s13 hook"),
             "the panic reached the log file"
         );
+    }
+
+    #[test]
+    fn gray_image_desaturates_dims_and_keeps_alpha() {
+        let icon = tauri::image::Image::new_owned(vec![200, 100, 50, 255, 0, 0, 0, 0], 1, 2);
+        let gray = gray_image(&icon);
+        let rgba = gray.rgba();
+        // Rec.601 luma of (200,100,50) = 124, dimmed to 55% = 68; RGB equal.
+        assert_eq!(&rgba[0..4], &[68, 68, 68, 255]);
+        // Fully transparent pixel stays untouched (no halo at tray size).
+        assert_eq!(&rgba[4..8], &[0, 0, 0, 0]);
+        assert_eq!((gray.width(), gray.height()), (1, 2));
     }
 }

@@ -62,8 +62,25 @@ jobs:
         with:
           name: windows-installers
           path: bundle
+      # S7/README FAQ: publish SHA-256 of every installer so unsigned-download
+      # verification is possible (certutil -hashfile <file> SHA256). Passed as
+      # `body` next to generate_release_notes — the API appends the generated
+      # notes after a custom body, so both end up in the release.
+      - name: Compute installer checksums
+        id: hash
+        working-directory: bundle
+        run: |
+          {
+            echo 'body<<HASHES_EOF'
+            echo '## SHA-256 checksums'
+            echo 'Verify your download: `certutil -hashfile <file> SHA256` (Windows) or `sha256sum <file>`.'
+            echo
+            find . -type f \( -name '*.exe' -o -name '*.msi' \) -print0 | sort -z | xargs -0 sha256sum | sed 's|\./||'
+            echo 'HASHES_EOF'
+          } >> "$GITHUB_OUTPUT"
       - uses: softprops/action-gh-release@v2
         with:
+          body: ${{ steps.hash.outputs.body }}
           generate_release_notes: true
           files: |
             bundle/nsis/*.exe
