@@ -227,6 +227,24 @@ fn load_config() -> DeskConfig {
     }
 }
 
+/// Windows: the release binary is GUI-subsystem (no console), so every
+/// console program it spawns (node.exe, cmd.exe, where.exe, reg.exe,
+/// taskkill) would get its own visible console window unless
+/// CREATE_NO_WINDOW is passed — the release build used to pop a "node.js"
+/// window that also put the token URL on screen (the one surface S1's log
+/// redaction cannot cover). Nothing visible is lost: the server's stdio is
+/// piped, and the probe/kill call sites discard output anyway. Debug builds
+/// keep the old behavior — there the parent owns a console the child
+/// attaches to, and a Ctrl+C dev teardown takes the server down with it.
+#[cfg(windows)]
+fn hide_console(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    if !cfg!(debug_assertions) {
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// Whether the configured launch command plausibly resolves. A path (it has a
 /// separator) is taken at face value; a bare name must be found by where/which
 /// — the same PATH (and, via where, the same .cmd/.bat PATHEXT resolution)
@@ -240,8 +258,11 @@ fn command_locatable(command: &str) -> bool {
     let (probe, arg) = ("where.exe", command);
     #[cfg(not(windows))]
     let (probe, arg) = ("which", command);
-    Command::new(probe)
-        .arg(arg)
+    let mut probe = Command::new(probe);
+    probe.arg(arg);
+    #[cfg(windows)]
+    hide_console(&mut probe);
+    probe
         .output()
         .map(|out| out.status.success())
         .unwrap_or(true)
@@ -276,10 +297,11 @@ fn runtime_pv_blocks(pv: &str) -> bool {
 /// per-user install shadows it.
 fn webview2_too_old() -> Option<String> {
     for key in WEBVIEW2_REGISTRY_KEYS {
-        let Ok(output) = Command::new("reg.exe")
-            .args(["query", key, "/v", "pv"])
-            .output()
-        else {
+        let mut query = Command::new("reg.exe");
+        query.args(["query", key, "/v", "pv"]);
+        #[cfg(windows)]
+        hide_console(&mut query);
+        let Ok(output) = query.output() else {
             continue;
         };
         if !output.status.success() {
@@ -312,9 +334,10 @@ fn kill_child_tree(child: &mut Child) {
     let pid = child.id();
     #[cfg(windows)]
     {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .status();
+        let mut kill = Command::new("taskkill");
+        kill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+        hide_console(&mut kill);
+        let _ = kill.status();
     }
     #[cfg(not(windows))]
     {
@@ -466,6 +489,8 @@ fn spawn_server(app: &AppHandle) {
         if let Some(cwd) = &config.cwd {
             command.current_dir(cwd);
         }
+        #[cfg(windows)]
+        hide_console(&mut command);
         command
     };
     let spawned = build(false).spawn().or_else(|error| {
@@ -659,15 +684,16 @@ fn reg_dword_is_zero(output: &str, name: &str) -> bool {
 /// the registry is the source of truth anyway. Missing value or a probe
 /// failure reads as light — the page's own default.
 fn app_mode_dark() -> bool {
-    let Ok(output) = Command::new("reg.exe")
-        .args([
-            "query",
-            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-            "/v",
-            "AppsUseLightValue",
-        ])
-        .output()
-    else {
+    let mut query = Command::new("reg.exe");
+    query.args([
+        "query",
+        r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        "/v",
+        "AppsUseLightValue",
+    ]);
+    #[cfg(windows)]
+    hide_console(&mut query);
+    let Ok(output) = query.output() else {
         return false;
     };
     reg_dword_is_zero(

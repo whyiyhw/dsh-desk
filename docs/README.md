@@ -17,6 +17,7 @@
 | [verification-2026-09-05-S7.md](verification-2026-09-05-S7.md) | 交付自验 | S7 托盘状态可视化:ready/not-ready 双色 + 意外退出 toast + 审查三修;发布哈希/SmartScreen FAQ 增补;Win+B 开浮层配方 v4(v0.2.1) |
 | [postmortem-2026-09-05-host-hyperv-broken.md](postmortem-2026-09-05-host-hyperv-broken.md) | 事故复盘 | 宿主 Hyper-V 组件库损坏(载荷停 2020 版):Phase 2 虚机门禁放弃执行的完整证据链 + VM 排障仪器/免交互安装配方沉淀 |
 | [verification-2026-09-06-S14-S20.md](verification-2026-09-06-S14-S20.md) | 交付自验 | S14-S20 UX 批次:更新检查 toast/文案分离/可访性/视觉身份与暗色(WebView2 主题钉死 light 的发现与 data-theme 双通道)/Use detected dsh/首次关窗一次性通知;toast 送达级判定仪器(Action Center 时间戳)+FA 抑制环境事实 |
+| [verification-2026-09-06-S22.md](verification-2026-09-06-S22.md) | 交付自验 | S22 子进程控制台窗口抑制(CREATE_NO_WINDOW×5 站点):探针对照 pre/post 修复(43→0 命中)、按进程树归属的控制台窗枚举仪器、与用户在跑实例共存的探针补丁披露 |
 
 ## 命名约定(即分类)
 
