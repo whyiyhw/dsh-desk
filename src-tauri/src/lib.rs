@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 /// Slow-start hint and give-up thresholds for the `dsh web:` readiness line.
@@ -37,6 +37,9 @@ const WEBVIEW2_DOWNLOAD_URL: &str = "https://go.microsoft.com/fwlink/?linkid=212
 /// still worth offering. Drafts are invisible to unauthenticated reads and
 /// can never appear here.
 const RELEASES_API_URL: &str = "https://api.github.com/repos/whyiyhw/dsh-desk/releases?per_page=1";
+/// S14: every update-check outcome must reach the user within ~5s of the
+/// tray click, so the HTTP budget stays at 4s and leaves room for the toast.
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(4);
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -134,6 +137,17 @@ fn log_path() -> Option<PathBuf> {
         .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("dsh-desk.log"))
 }
 
+/// S19: one-shot marker for the "still running in the tray" hint — a plain
+/// file next to the log, deliberately NOT a config.json field (the config
+/// is user-authored; one-shot UI state does not belong in it).
+fn tray_hint_path() -> Option<PathBuf> {
+    std::env::var("APPDATA").ok().map(|appdata| {
+        PathBuf::from(appdata)
+            .join("dsh-desk")
+            .join("tray-hint.shown")
+    })
+}
+
 /// S13: past this size the mirrored log rotates at startup (one `.old`
 /// generation kept). The dsh stdout mirror makes this file grow without
 /// bound otherwise.
@@ -173,6 +187,25 @@ fn log_line(line: &str) {
     }
 }
 
+/// Persist a config to disk. The first-run default write and the S18
+/// "Use detected dsh" switch share this writer so both produce the same
+/// file shape.
+fn write_config(config: &DeskConfig) -> std::io::Result<()> {
+    let path = config_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "no config path — APPDATA is not set",
+        )
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(config).unwrap_or_default() + "\n",
+    )
+}
+
 fn load_config() -> DeskConfig {
     let Some(path) = config_path() else {
         return DeskConfig::default();
@@ -187,13 +220,7 @@ fn load_config() -> DeskConfig {
         },
         Err(_) => {
             let config = DeskConfig::default();
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-                let _ = std::fs::write(
-                    &path,
-                    serde_json::to_string_pretty(&config).unwrap_or_default() + "\n",
-                );
-            }
+            let _ = write_config(&config);
             config
         }
     }
@@ -415,7 +442,7 @@ fn spawn_server(app: &AppHandle) {
             config.command
         );
         log_line(&message);
-        show_onboarding(&app);
+        show_onboarding(&app, &config);
         return;
     }
     let state = app.state::<ServerState>();
@@ -455,16 +482,13 @@ fn spawn_server(app: &AppHandle) {
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            let message = format!(
-                "dsh-desk: cannot start `{} {}`: {error}",
-                config.command,
-                config.args.join(" ")
-            );
-            log_line(&message);
+            let (log_copy, panel_copy) =
+                degraded_spawn_messages(&config.command, &config.args, &error.to_string());
+            log_line(&log_copy);
             set_tray_status(app, false);
             // The page here is index.html (boot, or a Restart that just ran
             // deskReset) — possibly still loading at boot, so wait for it.
-            show_degraded(&app, &message, true);
+            show_degraded(&app, &panel_copy, true);
             return;
         }
     };
@@ -537,16 +561,10 @@ fn spawn_server(app: &AppHandle) {
         // degraded state over the new attempt's loading page (the restart's
         // deskReset clears it, but the flash is avoidable).
         if is_still_starting(&state, gen) && state.current_generation() == gen {
-            let message = format!(
-                "dsh-desk: no readiness line after {}s — the server is still running and was \
-                 NOT killed. It may just be slow (a late start is picked up automatically), or \
-                 `dsh web` changed its output wording. The log shows everything it printed; \
-                 config.json controls how it is launched.",
-                READY_TIMEOUT_AFTER.as_secs()
-            );
-            log_line(&message);
+            let (log_copy, panel_copy) = degraded_timeout_messages();
+            log_line(&log_copy);
             // 90s in, index.html has long finished loading; no wait needed.
-            show_degraded(&app_timers, &message, false);
+            show_degraded(&app_timers, &panel_copy, false);
         }
     });
 }
@@ -569,6 +587,22 @@ fn claim_exit(state: &ServerState, gen: u64) -> Option<(Option<Child>, bool)> {
     Some((child.take(), had_url))
 }
 
+/// Show a tray-toast notification (title "DSH Desk"). A failure to show is
+/// logged, never swallowed: on Windows, toasts only work for installed apps
+/// (start-menu shortcut / AUMID), so a dev or portable run failing here is
+/// expected — and must leave a trace.
+fn show_toast(app: &AppHandle, body: &str) {
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title("DSH Desk")
+        .body(body)
+        .show()
+    {
+        log_line(&format!("dsh-desk: toast failed to show: {error}"));
+    }
+}
+
 /// Report a dead server: log and tell the window. EOF is only an assumption
 /// that the whole tree died — if the process is somehow still alive (stdout
 /// closed without exit, shell-shim semantics), the tree is killed here
@@ -585,39 +619,94 @@ fn server_exited(app: &AppHandle, pid: u32, gen: u64) {
     if let Some(mut child) = child {
         kill_child_tree(&mut child);
     }
-    let message = if had_url {
-        format!("dsh-desk: the dsh server (pid {pid}) exited")
-    } else {
-        format!(
-            "dsh-desk: the dsh server (pid {pid}) exited before printing its URL — \
-             see %APPDATA%/dsh-desk/dsh-desk.log and the launch command in config.json"
-        )
-    };
-    log_line(&message);
+    let (log_copy, panel_copy) = degraded_exit_messages(pid, had_url);
+    log_line(&log_copy);
     set_tray_status(app, false);
     // S7: with the window hidden in the tray, the toast is the ping that
     // makes an unexpected exit visible without hunting for the log. User-
     // initiated stops (Quit, Restart) never reach here — they supersede the
-    // generation before this watcher's EOF lands. A failure to show is
-    // logged, not swallowed: on Windows, toasts only work for installed
-    // apps (start-menu shortcut / AUMID), so a dev or portable run failing
-    // here is expected — and must leave a trace.
-    if let Err(error) = app
-        .notification()
-        .builder()
-        .title("DSH Desk")
-        .body(
-            "The dsh server exited unexpectedly. \
-             Open the dsh-desk window for what to do next.",
-        )
-        .show()
-    {
-        log_line(&format!("dsh-desk: exit toast failed to show: {error}"));
-    }
+    // generation before this watcher's EOF lands.
+    show_toast(
+        app,
+        "The dsh server exited unexpectedly. \
+         Open the dsh-desk window for what to do next.",
+    );
     // Died before the readiness line → the page is still index.html (maybe
     // still loading): wait for the helper. Died after → the page is the
     // remote dsh GUI where no helper exists: plain text at once.
-    show_degraded(app, &message, !had_url);
+    show_degraded(app, &panel_copy, !had_url);
+}
+
+/// Whether `reg query` output says the named REG_DWORD is 0 (used for
+/// AppsUseLightValue: 0 = dark default app mode).
+fn reg_dword_is_zero(output: &str, name: &str) -> bool {
+    output
+        .lines()
+        .find(|line| line.contains(name))
+        .and_then(|line| {
+            line.split_whitespace()
+                .skip_while(|token| *token != "REG_DWORD")
+                .nth(1)
+        })
+        == Some("0x0")
+}
+
+/// Whether the user's default Windows app mode is dark. The panel page reads
+/// this through a `data-theme` attribute instead of relying on
+/// prefers-color-scheme alone: the shell measured (2026-09-05) a WebView2
+/// that pins the media query to light regardless of the OS app mode, and
+/// the registry is the source of truth anyway. Missing value or a probe
+/// failure reads as light — the page's own default.
+fn app_mode_dark() -> bool {
+    let Ok(output) = Command::new("reg.exe")
+        .args([
+            "query",
+            r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            "/v",
+            "AppsUseLightValue",
+        ])
+        .output()
+    else {
+        return false;
+    };
+    reg_dword_is_zero(
+        &String::from_utf8_lossy(&output.stdout),
+        "AppsUseLightValue",
+    )
+}
+
+/// Process-lifetime cache of the probe: the stamp also runs on interactive
+/// window toggles, and one registry read per launch is enough.
+static APP_MODE_DARK: OnceLock<bool> = OnceLock::new();
+
+fn app_mode_dark_cached() -> bool {
+    *APP_MODE_DARK.get_or_init(app_mode_dark)
+}
+
+/// JS prefix that stamps the real app mode onto the panel page before any
+/// panel helper runs. It runs only inside the "helper exists" branch — the
+/// plain-text fallback can fire on the remote dsh GUI page, whose DOM the
+/// shell must never touch.
+fn theme_prefix() -> &'static str {
+    if app_mode_dark_cached() {
+        "document.documentElement.dataset.theme='dark';"
+    } else {
+        ""
+    }
+}
+
+/// Stamp the theme wherever the window becomes visible OUTSIDE a panel eval
+/// (tray Show, hotkey toggle, single-instance focus): without this a
+/// dark-mode user peeking at the still-starting page gets the light
+/// default. Idempotent on the page; a no-op on the remote GUI page (the
+/// `starting` element exists only on ours).
+fn stamp_page_theme(window: &tauri::WebviewWindow) {
+    if app_mode_dark_cached() {
+        let _ = window.eval(
+            "if (document.getElementById('starting')) \
+             { document.documentElement.dataset.theme='dark'; }",
+        );
+    }
 }
 
 /// Unhide the window with the slow-start hint on the loading page. No
@@ -625,7 +714,10 @@ fn server_exited(app: &AppHandle, pid: u32, gen: u64) {
 fn show_hint(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
-        let _ = window.eval("if (typeof deskShowHint === 'function') deskShowHint();");
+        let _ = window.eval(&format!(
+            "if (typeof deskShowHint === 'function') {{ {}deskShowHint(); }}",
+            theme_prefix()
+        ));
     }
 }
 
@@ -638,24 +730,26 @@ fn show_hint(app: &AppHandle) {
 /// until index.html has run, the helper is undefined and the script would
 /// fall back to buttonless plain text — so retry briefly for the helper to
 /// appear first and only fall back after that.
-fn show_panel(app: &AppHandle, helper: &str, message: &str, wait: bool) {
+fn show_panel(app: &AppHandle, helper: &str, message: &str, extra_arg: bool, wait: bool) {
     let message = serde_json::to_string(message).unwrap_or_else(|_| "\"\"".into());
+    let args = format!("{message}, {extra_arg}");
     let fallback = format!(
         "document.body.innerHTML = '', \
          document.body.style.cssText = 'font: 14px system-ui; padding: 24px; color: #333; white-space: pre-wrap;', \
          document.body.textContent = {message}"
     );
+    let theme = theme_prefix();
     let script = if wait {
         format!(
             "(function () {{ var n = 0; \
-              function go() {{ if (typeof {helper} === 'function') {helper}({message}); \
+              function go() {{ if (typeof {helper} === 'function') {{ {theme}{helper}({args}); }} \
                 else if (n++ < 25) setTimeout(go, 200); \
                 else ({fallback}); }} \
               go(); }})();"
         )
     } else {
         format!(
-            "if (typeof {helper} === 'function') {helper}({message}); \
+            "if (typeof {helper} === 'function') {{ {theme}{helper}({args}); }} \
              else ({fallback});"
         )
     };
@@ -665,34 +759,114 @@ fn show_panel(app: &AppHandle, helper: &str, message: &str, wait: bool) {
     }
 }
 
+/// S15: every degraded state has two copies of its message — the log line
+/// keeps the greppable `dsh-desk:` prefix and the shell's own vocabulary,
+/// the panel speaks the interface's (situation → why → next step, the
+/// structure the onboarding and runtime guides already use). The split is
+/// anchored by a test: no user-facing panel text may carry the log prefix
+/// or internal terms like "readiness line".
+fn degraded_spawn_messages(command: &str, args: &[String], error: &str) -> (String, String) {
+    let command_line = format!("{command} {}", args.join(" "));
+    (
+        format!("dsh-desk: cannot start `{command_line}`: {error}"),
+        format!(
+            "The launch command could not be started:\n\
+             \n\
+             `{command_line}`\n\
+             \n\
+             {error}\n\
+             \n\
+             Point `command` / `args` in the config file at a working dsh, then press Retry."
+        ),
+    )
+}
+
+fn degraded_timeout_messages() -> (String, String) {
+    let seconds = READY_TIMEOUT_AFTER.as_secs();
+    (
+        format!(
+            "dsh-desk: no readiness line after {seconds}s — the server is still running and was \
+             NOT killed. It may just be slow (a late start is picked up automatically), or \
+             `dsh web` changed its output wording. The log shows everything it printed; \
+             config.json controls how it is launched."
+        ),
+        format!(
+            "The dsh server has not printed its web address after {seconds} s.\n\
+             \n\
+             It was NOT killed — it may just be slow (a late start is picked up automatically), \
+             or this dsh version changed what it prints.\n\
+             \n\
+             The log shows everything the server printed; the config file controls how it is \
+             launched."
+        ),
+    )
+}
+
+fn degraded_exit_messages(pid: u32, had_url: bool) -> (String, String) {
+    if had_url {
+        (
+            format!("dsh-desk: the dsh server (pid {pid}) exited"),
+            format!(
+                "The dsh server (pid {pid}) exited.\n\
+                 \n\
+                 The tray's Restart server brings it back; the log has its last output."
+            ),
+        )
+    } else {
+        (
+            format!(
+                "dsh-desk: the dsh server (pid {pid}) exited before printing its URL — \
+                 see %APPDATA%/dsh-desk/dsh-desk.log and the launch command in config.json"
+            ),
+            format!(
+                "The dsh server (pid {pid}) exited before printing its web address.\n\
+                 \n\
+                 The log shows everything it printed; the config file controls how it is \
+                 launched. Press Retry once the launch command works."
+            ),
+        )
+    }
+}
+
 /// The degraded panel: the explanation plus the open-log / open-config /
 /// retry actions defined in src/index.html. `wait` follows the same rule as
 /// the other panels: sources that fire while the page is (still) index.html
 /// wait for the helper — boot races the initial page load — while sources
 /// that can fire on the remote dsh GUI page fall back to plain text at once.
 fn show_degraded(app: &AppHandle, message: &str, wait: bool) {
-    show_panel(app, "deskShowDegraded", message, wait);
+    show_panel(app, "deskShowDegraded", message, false, wait);
 }
 
-/// The install guide (S4): nothing to launch — dsh is not on PATH and the
-/// config does not point elsewhere yet. Shares the degraded panel's action
-/// mechanism (same invoke/ACL path).
-fn show_onboarding(app: &AppHandle) {
+/// The install guide (S4): nothing to launch — the configured command
+/// resolves nowhere. Shares the degraded panel's action mechanism (same
+/// invoke/ACL path). S18: when `dsh` itself does resolve on PATH (a broken
+/// checkout config, a later install), the panel also offers the one-click
+/// switch back to the default launch.
+fn show_onboarding(app: &AppHandle, config: &DeskConfig) {
     set_tray_status(app, false);
+    let use_dsh = command_locatable("dsh");
     let config_path = config_path()
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "%APPDATA%/dsh-desk/config.json".into());
-    let message = format!(
-        "Nothing to launch yet — dsh was not found on this machine.\n\
+    let mut message = format!(
+        "Nothing to launch yet — `{}` was not found on this machine.\n\
          \n\
          · Install dsh, then press Retry. The button below opens the project \
          page with its install instructions.\n\
          · Running dsh from a source checkout? Open the config file and point \
          `command` / `args` / `cwd` at your checkout, then press Retry.\n\
          \n\
-         Config file: {config_path}"
+         Config file: {config_path}",
+        config.command
     );
-    show_panel(app, "deskShowOnboarding", &message, true);
+    if use_dsh {
+        message.push_str(
+            "\n\
+             \n\
+             `dsh` was found on PATH — \"Use detected dsh\" switches the config to it.",
+        );
+    }
+    show_panel(app, "deskShowOnboarding", &message, use_dsh, true);
 }
 
 /// The runtime-too-old guide (S4/G12): the GUI cannot work on this WebView2
@@ -709,7 +883,7 @@ fn show_runtime_old(app: &AppHandle, pv: &str) {
          then press Retry.",
         pv_major = pv.split('.').next().unwrap_or(pv),
     );
-    show_panel(app, "deskShowRuntimeOld", &message, true);
+    show_panel(app, "deskShowRuntimeOld", &message, false, true);
 }
 
 /// S7: a gray, dimmed copy of the brand icon — the tray's not-ready face
@@ -768,6 +942,9 @@ fn open_gui(app: &AppHandle, url: &str) {
             serde_json::to_string(url).unwrap_or_else(|_| "\"\"".into())
         );
         let _ = window.show();
+        // The page is still index.html until the replace lands — a dark-mode
+        // user would see one light frame here.
+        stamp_page_theme(&window);
         let _ = window.set_focus();
         let _ = window.eval(&script);
     }
@@ -780,6 +957,9 @@ fn toggle_window(app: &AppHandle) {
             let _ = window.hide();
         } else {
             let _ = window.show();
+            // Revealing the still-starting page outside any panel eval: the
+            // theme stamp must travel with it (S17).
+            stamp_page_theme(&window);
             let _ = window.set_focus();
         }
     }
@@ -937,11 +1117,15 @@ fn check_for_updates(app: &AppHandle) {
     });
 }
 
+/// S5a check body. S14: every outcome is now also said out loud via a toast
+/// — a menu action with no visible response reads as broken, and "only
+/// logs" was exactly that. The HTTP budget is UPDATE_CHECK_TIMEOUT so even
+/// the failure path lands inside ~5s of the tray click.
 fn run_update_check(app: &AppHandle) {
     log_line("dsh-desk: checking for updates...");
     let current = app.package_info().version.to_string();
     let latest = ureq::get(RELEASES_API_URL)
-        .timeout(Duration::from_secs(10))
+        .timeout(UPDATE_CHECK_TIMEOUT)
         .set(
             "User-Agent",
             concat!("dsh-desk/", env!("CARGO_PKG_VERSION")),
@@ -956,6 +1140,11 @@ fn run_update_check(app: &AppHandle) {
         });
     let Some(latest) = latest else {
         log_line("dsh-desk: update check unavailable (network or API) — nothing to do");
+        show_toast(
+            app,
+            "Update check failed — the network or the GitHub API is unreachable. \
+             Details are in the log.",
+        );
         return;
     };
     let tag = latest
@@ -972,15 +1161,34 @@ fn run_update_check(app: &AppHandle) {
                 "dsh-desk: release {tag} is newer than this build ({current}) \
                  — opening the releases page"
             ));
+            show_toast(
+                app,
+                &format!("Release {tag} is out — opening the releases page."),
+            );
             open_external(app, page, "releases page");
         }
-        Some(false) => log_line(&format!(
-            "dsh-desk: no newer release than {current}; newest published is {tag}"
-        )),
-        None => log_line(&format!(
-            "dsh-desk: release tag `{tag}` is not comparable with {current} \
-             — treating as no update"
-        )),
+        Some(false) => {
+            log_line(&format!(
+                "dsh-desk: no newer release than {current}; newest published is {tag}"
+            ));
+            show_toast(
+                app,
+                &format!("You're up to date — {current} is the newest release."),
+            );
+        }
+        None => {
+            log_line(&format!(
+                "dsh-desk: release tag `{tag}` is not comparable with {current} \
+                 — treating as no update"
+            ));
+            show_toast(
+                app,
+                &format!(
+                    "Couldn't compare release tag `{tag}` with {current} \
+                     — treating it as no update."
+                ),
+            );
+        }
     }
 }
 
@@ -1045,6 +1253,55 @@ fn open_webview2_download(app: AppHandle) {
     open_external(&app, WEBVIEW2_DOWNLOAD_URL, "WebView2 download page");
 }
 
+/// Append a note to whatever panel is showing — the same channel the
+/// invoke-failure fallback uses. A command that cannot do its job must not
+/// leave the panel silent (the S14 lesson, applied to S18).
+fn panel_note(app: &AppHandle, note: &str) {
+    let note = serde_json::to_string(note).unwrap_or_else(|_| "\"\"".into());
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.eval(&format!(
+            "if (typeof deskAppendNote === 'function') deskAppendNote({note});"
+        ));
+    }
+}
+
+/// S18: switch the config back to the default `dsh` launch and retry. The
+/// panel only offers this after `dsh` was confirmed on PATH, so the rewrite
+/// cannot point at nothing; the guard re-runs here because the panel click
+/// and this handler are not atomic. The replaced command line is logged
+/// first — the old config is user-authored and should leave a trace.
+#[tauri::command]
+fn use_detected_dsh(app: AppHandle) {
+    log_line("dsh-desk: use_detected_dsh invoked");
+    if !command_locatable("dsh") {
+        log_line("dsh-desk: dsh is no longer locatable — refusing to rewrite the config");
+        panel_note(
+            &app,
+            "dsh is no longer found on PATH. Install it, then press Retry.",
+        );
+        return;
+    }
+    let old = load_config();
+    log_line(&format!(
+        "dsh-desk: replacing config `{} {}` with the default dsh launch",
+        old.command,
+        old.args.join(" ")
+    ));
+    match write_config(&DeskConfig::default()) {
+        Ok(()) => restart_server(&app),
+        Err(error) => {
+            log_line(&format!("dsh-desk: rewriting config.json failed: {error}"));
+            panel_note(
+                &app,
+                &format!(
+                    "Could not write the config file ({error}). Open it and set \
+                     `command` to \"dsh\", then press Retry."
+                ),
+            );
+        }
+    }
+}
+
 #[tauri::command]
 fn retry_server(app: AppHandle) {
     log_line("dsh-desk: retry_server invoked");
@@ -1080,6 +1337,9 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                // Same escape path as the tray Show / hotkey: the focused
+                // page may still be the starting page (S17).
+                stamp_page_theme(&window);
                 let _ = window.set_focus();
             }
         }))
@@ -1114,6 +1374,7 @@ pub fn run() {
             open_log_file,
             open_config_file,
             retry_server,
+            use_detected_dsh,
             open_dsh_page,
             open_webview2_download
         ])
@@ -1233,6 +1494,24 @@ pub fn run() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
+                // S19: the FIRST close is the one a new user finds surprising
+                // ("where did the app go?") — say it once, then stay quiet
+                // forever. The marker is a plain file, not a config field.
+                if let Some(path) = tray_hint_path() {
+                    if !path.exists() {
+                        show_toast(
+                            window.app_handle(),
+                            "The window is closed — DSH Desk keeps running in the tray \
+                             (Alt+Shift+D or the tray icon brings it back).",
+                        );
+                        if let Err(error) = std::fs::write(&path, b"") {
+                            log_line(&format!(
+                                "dsh-desk: writing the tray-hint marker failed ({error}) \
+                                 — the hint may repeat on the next close"
+                            ));
+                        }
+                    }
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -1505,5 +1784,52 @@ mod tests {
         // Fully transparent pixel stays untouched (no halo at tray size).
         assert_eq!(&rgba[4..8], &[0, 0, 0, 0]);
         assert_eq!((gray.width(), gray.height()), (1, 2));
+    }
+
+    // ── S15: panel copy is interface prose, log copy stays greppable ───
+
+    #[test]
+    fn reg_dword_zero_reads_dark_app_mode() {
+        let dark = "\r\nHKEY_CURRENT_MACHINE\\...\\Personalize\r\n\
+            \x20   AppsUseLightValue    REG_DWORD    0x0\r\n\r\n";
+        let light = "\r\nHKEY_CURRENT_MACHINE\\...\\Personalize\r\n\
+            \x20   AppsUseLightValue    REG_DWORD    0x1\r\n\r\n";
+        assert!(reg_dword_is_zero(dark, "AppsUseLightValue"));
+        assert!(!reg_dword_is_zero(light, "AppsUseLightValue"));
+        // Missing name or unreadable output reads as light, never dark.
+        assert!(!reg_dword_is_zero("value not found.", "AppsUseLightValue"));
+        assert!(!reg_dword_is_zero("", "AppsUseLightValue"));
+        assert!(!reg_dword_is_zero(
+            "    AppsUseLightValue    REG_DWORD\r\n",
+            "AppsUseLightValue"
+        ));
+    }
+
+    #[test]
+    fn degraded_copies_split_log_prefix_from_panel_prose() {
+        let cases = [
+            degraded_spawn_messages(
+                "dsh",
+                &["--profile".into(), "web".into()],
+                "program not found",
+            ),
+            degraded_timeout_messages(),
+            degraded_exit_messages(4242, false),
+            degraded_exit_messages(4242, true),
+        ];
+        for (log_copy, panel_copy) in cases {
+            assert!(
+                log_copy.starts_with("dsh-desk:"),
+                "the log copy keeps its greppable prefix"
+            );
+            assert!(
+                !panel_copy.contains("dsh-desk:"),
+                "no log prefix in the panel copy"
+            );
+            assert!(
+                !panel_copy.to_lowercase().contains("readiness line"),
+                "no internal shell jargon in the panel copy"
+            );
+        }
     }
 }

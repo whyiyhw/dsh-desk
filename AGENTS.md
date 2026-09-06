@@ -73,6 +73,21 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **启动期文件副作用（轮转/截断）必须放在 single-instance 判定之后**（setup 内）：第二实例在 builder 期 single-instance init 里 `exit(0)`，到不了 setup；放 run() 顶部会让二次启动把运行中实例的活日志腰斩进 `.old`。
 - **就绪计数基线会被 S13 日志轮转作废**：启动前取的 `'dsh web: http'` 计数基线在轮转后（新日志从零计）永远追不上，launch 类脚本必须在启动后（等轮转落定）重取基线；就绪与可见的先后判据用"首次可见瞬间日志里是否已有就绪行"，别用两个轮询时间戳相减（同周期内先盖 visible 戳是测量伪影，曾 1ms 假违约）。成品 `%TEMP%\p3-smoke\launch-probe.ps1`。
 
+### UI 验证仪器与 toast/主题环境事实（S14-S20 交付沉淀，2026-09-06）
+
+> 成套脚本在 `D:\tmp\ux-verify\`（common/phase1-6/trayv2/census），下一轮 UI 验证直接复用。验证记录 [docs/verification-2026-09-06-S14-S20.md](docs/verification-2026-09-06-S14-S20.md)。
+
+- **toast 验证的判定层级（本机 Focus Assist 常开）**：NVIDIA Overlay 全屏自动规则把 FA 拉起（`QuietHoursServiceState=2`），**所有应用的 toast 显示被抑制**（WinRT 原生控制 toast 也不显示；杀 overlay+注册表置 0 无用，WpnService 内存态不受注册表控制且无权重启）。确定性仪器 = **Action Center 入库时间戳**：HKCU `...\Notifications\Settings\<AUMID>\LastNotificationAddedTime` 触发前后对比（per-app，未注册 AUMID 的控制 toast 连入库都没有——别拿它当仪器）；"时间戳更新 + 应用日志无 `toast failed to show`" = 送达级证据，显示级引用 S7 同通道目验。
+- **WebView2 把 `prefers-color-scheme` 钉死为 light**（2026-09-06 实测：暗色 app mode 下媒体查询仍不命中，AppsUseLightValue/SystemUsesLightValue 双置 0 + WM_SETTINGCHANGE 广播都无效，连窗口标题栏都亮）——暗色实现一律 Rust 读注册表真值（`reg query ...AppsUseLightValue` 0=dark）经 eval 注入，且**注入必须只在"自家页面 helper 存在"分支内**（`document.getElementById('starting')` 之类守卫），不得碰上游 GUI 页面 DOM；starting 页还有托盘 Show/热键/二次启动三条不经 panel eval 的显示路径，show 后都要补 stamp。
+- **WebView2 的 UIA 树不可用**（Chromium 懒激活：FromHandle 只见 "DSH Desk - Web content" 一层，无 web 内容）——web 内容文本断言走"窗口可见=面板已上屏（hidden-start 契约）→ PrintWindow(2) 截图 → Umi-OCR"；**web 按钮程序化点击走键盘 Tab+Enter**（SetForegroundWindow 后 keybd_event 0x09/0x0D，display:none 元素自动跳过焦点=首个可见按钮）。原生 UI（toast/菜单）的 UIA 正常。
+- **单像素断言会踩 ClearType 亚像素伪影**（字形边缘读出橙色 (225,165,106) 之类）——颜色断言用全图近色计数（`Count-PixelsNear`），不用点采样；文本区采样也不行（5×5 多数决都不够）。
+- **Umi-OCR 启动**：`D:\soft\Umi-OCR_Paddle\Umi-OCR.exe`（默认不在跑），模型预热约 25s 后端口 2178 可用，`python C:/Users/Administrator/.agents/skills/ocr/scripts/ocr.py <png>` 直读；英文面板文案逐字提取可靠。
+- **netsh advfirewall 在本沙箱无提权**（"requires elevation"且输出会被 Out-Null 吞掉——加规则要检查命令结果，别静默）；网络失败类分支的实机触发需另想仪器或记"未实机触发+同构论证"。
+- **被中断的 cargo 构建留损坏 PDB**（LNK1285）——删 `target/debug/deps/dsh_desk-*.pdb` 重链即愈，不必 clean。
+- **census 甄别口径**：匹配 `tsx/esm|deepseek-harness` 的 node 不等于泄漏——本机常驻 dsh 开发实例（3080 WebGUI，创建于当天早上、父进程存活）长得一模一样；以创建时间+父进程存活+与应用 spawn 日志的 pid 对照三重甄别。ZCode 自己的 MCP 服务器（`@z_ai/mcp-server`、`mcp-remote`）会在会话中繁殖 node 进程，与被测物无关。
+- **改 .json 系统默认查看器是 ZCode**（Edit config 菜单验证时 notepad 断言会假阴性——以应用日志 `opened ... in system viewer` 为准）。
+- 并行会话提醒再现:README 在本会话中途被另一会话更新(SmartScreen FAQ),Edit 前重读的规矩再+1。
+
 
 ### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
 

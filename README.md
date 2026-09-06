@@ -5,7 +5,7 @@ Desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 ## What it does
 
 - **Server lifecycle**: spawns `dsh --profile web` as a child process, watches stdout for the `dsh web: <url>` readiness line (which carries the auth token), then navigates the window to the authenticated GUI. No copy-pasting tokens.
-- **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Edit config / Quit (stops the server).
+- **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Edit config / Check for updates / Quit (stops the server). Closing the window for the first time shows a one-time "still running in the tray" notification.
 - **Global hotkey**: `Alt+Shift+D` shows/hides the window from anywhere.
 - **Window memory**: window size and position persist across launches (maximized state is deliberately not restored — startup stays quiet until the GUI is ready).
 - **Single instance**: a second launch focuses the existing window.
@@ -23,7 +23,7 @@ Windows 10 or newer.
 
 **Machines with no WebView2 runtime and no internet during install** (rare): the installer embeds the small bootstrapper (+~2 MB), but installing the runtime itself still needs internet. On such a machine, first install Microsoft's standalone x64 WebView2 runtime ([go.microsoft.com/fwlink/?linkid=2124701](https://go.microsoft.com/fwlink/?linkid=2124701)) from a connected machine, then run the dsh-desk installer.
 
-**Updates**: the tray's *Check for updates* compares your version against the newest GitHub release and opens the Releases page when a newer one exists. dsh-desk never updates itself in place.
+**Updates**: the tray's *Check for updates* compares your version against the newest GitHub release and opens the Releases page when a newer one exists. dsh-desk never updates itself in place. Every outcome — newer release, up to date, or a failed check — also shows a toast, so the click never goes unanswered.
 
 ## Install (from source)
 
@@ -83,6 +83,7 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 
 ## Notes
 
+- The app's UI copy is English-only by design (the audience is the dsh developer community; the harness itself is English). Real multi-language demand would reopen this — see the spec's decision log.
 - The shell depends only on the stable web surface (the printed authenticated URL), not on DSH internals — safe across harness upgrades; see the FAQ for what happens if the wording drifts.
 - Sessions are durable on the dsh side: Quit stops the server, but your sessions resume on the next launch.
 - **Versioning**: `src-tauri/tauri.conf.json` is the single source of truth; releases are tagged `vX.Y.Z` from a tree where all three version fields (`tauri.conf.json`, `Cargo.toml`, `package.json`) agree — CI enforces this before any release build.
