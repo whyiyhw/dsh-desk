@@ -8,7 +8,7 @@ Desktop shell for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek
 - **Tray-resident**: closing the window hides it to the tray; the server keeps running. Tray menu: Show window / Open in browser / Restart server / Edit config / Check for updates / Quit (stops the server). Closing the window for the first time shows a one-time "still running in the tray" notification.
 - **Global hotkey**: `Alt+Shift+D` shows/hides the window from anywhere.
 - **Window memory**: window size and position persist across launches (maximized state is deliberately not restored — startup stays quiet until the GUI is ready).
-- **Single instance**: a second launch focuses the existing window.
+- **Single instance**: a second launch focuses the existing window (per instance — see [Multiple instances](#multiple-instances)).
 - **Guided failures**: every dead end turns into an actionable panel — a slow/failed server shows Open log / Open config / Retry; a machine without dsh shows an install guide; a WebView2 runtime older than Chromium 119 shows the runtime-download guide.
 
 ## Install (from a release)
@@ -89,7 +89,7 @@ Notes:
 ## Support
 
 - Bugs and questions: [GitHub Issues](https://github.com/whyiyhw/dsh-desk/issues).
-- Please attach `%APPDATA%\dsh-desk\dsh-desk.log` — every URL in it is redacted down to scheme://host:port, so the auth token never reaches the file. On a long-running installation also attach `dsh-desk.log.old`: the log rotates to one `.old` generation when it passes 512 KiB.
+- Please attach `%APPDATA%\dsh-desk\dsh-desk.log` — every URL in it is redacted down to scheme://host:port, so the auth token never reaches the file. On a long-running installation also attach `dsh-desk.log.old`: the log rotates to one `.old` generation when it passes 512 KiB. For a named instance (`--instance <name>`), attach `%APPDATA%\dsh-desk\instances\<name>\dsh-desk.log` instead — each instance logs to its own file.
 
 ## FAQ
 

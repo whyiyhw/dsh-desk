@@ -1,6 +1,6 @@
 # S1 交付自验记录(2026-09-04/25 深夜)
 
-> 对象:S1 · 就绪感知与超时降级(规范见 [spec-and-plan.md](spec-and-plan.md) §2.3)
+> 对象:S1 · 就绪感知与超时降级(规范见 [spec-and-plan.md](../spec-and-plan.md) §2.3)
 > 构建:`src-tauri/target/debug/dsh-desk.exe`(基线 `5e0c2af` + 工作树 S1 改动;`cargo test` 3 passed、`cargo build` 零警告、`cargo fmt` 已过)
 > 环境:本机 Windows 10 19045,WebView2 152,真实 config(`node --import tsx/esm … --port 0`)
 

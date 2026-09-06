@@ -1,6 +1,6 @@
 # S2 交付自验记录(2026-09-05)
 
-> 对象:S2 · 生命周期竞态收敛,代数标记(规范见 [spec-and-plan.md](spec-and-plan.md) §2.3 / §3.1)
+> 对象:S2 · 生命周期竞态收敛,代数标记(规范见 [spec-and-plan.md](../spec-and-plan.md) §2.3 / §3.1)
 > 构建:`src-tauri/target/debug/dsh-desk.exe`(**S1+S4+S2 合并树**,含并行 S4 会话 01:17 审查修复;`cargo test` 10 passed,`cargo fmt --check` 过)
 > 环境:本机 Windows 10 19045,WebView2 152.0.4191.62,真实 config(`node --import tsx/esm … --port 0`,cwd deepseek-harness checkout)
 

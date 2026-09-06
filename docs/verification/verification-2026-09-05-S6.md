@@ -1,6 +1,6 @@
 # S6 交付自验记录(2026-09-05 深夜)
 
-> 对象:S6 · 品牌图标(规范见 [spec-and-plan.md](spec-and-plan.md) §2.3)
+> 对象:S6 · 品牌图标(规范见 [spec-and-plan.md](../spec-and-plan.md) §2.3)
 > 产出:`design/app-icon.svg` 源图 + `src-tauri/icons/` 全套 16 文件(ico/icns/各尺寸 png/Appx 磁贴/StoreLogo)
 > 生成方式:cursor-agent CLI(composer-2.5)按 [design/S6-icon-brief.md](../design/S6-icon-brief.md) 执行,经三轮修订;最终方案 = opentype.js 提取 Segoe UI Bold "dsh" 轮廓 + 渐变瓦片
 > 构建:`src-tauri/target/release/dsh-desk.exe`(工作树在途状态;`pnpm tauri build --no-bundle` exit 0)

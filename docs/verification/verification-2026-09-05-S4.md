@@ -1,6 +1,6 @@
 # S4 交付自验记录（2026-09-05）
 
-> 对象：S4 · 首跑引导与失败可操作化（规范见 [spec-and-plan.md](spec-and-plan.md) §2.3）
+> 对象：S4 · 首跑引导与失败可操作化（规范见 [spec-and-plan.md](../spec-and-plan.md) §2.3）
 > 构建：`src-tauri/target/debug/dsh-desk.exe`（初验 00:25 构建；审查修复后 01:17 构建复验；含本会话 S4 改动 **与并行会话 S2 改动的合并态**，见"并行会话"节）
 > `cargo test`：初验 **9 passed**，审查修复后 **10 passed**（S4 新增 3 条：reg 输出解析 ×2、版本门槛 ×1；其余为 S1/S2）
 > 环境：本机 Windows 10 19045，WebView2 152.0.4191.62，`where dsh` 本机找不到（天然复现"干净机器无 dsh"）

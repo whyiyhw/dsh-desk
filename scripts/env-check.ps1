@@ -25,7 +25,7 @@ if (Test-Path $cfg) {
     Report 'config.json --port 0' $false "$cfg 不存在" '首次运行会生成;或预写配置'
 }
 
-# 3. 无 dsh-desk 残留实例 —— 真机 E2E 前置(single-instance 会把新测试实例弹回旧实例,exit 0 假象)
+# 3. 无 dsh-desk 残留实例 —— 真机 E2E 前置(同实例守卫会把新测试实例弹回旧实例,exit 0 假象;S23 起按实例名)
 $running = Get-Process -Name dsh-desk -ErrorAction SilentlyContinue
 Report '无 dsh-desk 残留进程' ($null -eq $running) $(if ($running) { "pid $($running.Id -join ',') 在跑" } else { '无' }) '托盘 Quit 或 taskkill /PID x /T /F(不要用 Stop-Process,不杀树)'
 

@@ -1,6 +1,6 @@
 # Phase 0 交付自验记录（2026-09-05）
 
-> 对象：Phase 0 · 立整基线（规范见 [spec-and-plan.md](spec-and-plan.md) §3 Phase 0 行）
+> 对象：Phase 0 · 立整基线（规范见 [spec-and-plan.md](../spec-and-plan.md) §3 Phase 0 行）
 > 构建：`pnpm tauri build` → release exe + MSI + NSIS 三产物（`src-tauri/target/release/bundle/`）
 > 冒烟对象：`src-tauri/target/release/dsh-desk.exe` —— S1+S4+S6+S2 合并态的**首次 release 构建冒烟**（此前各 S 项验证均在 debug 构建）
 > `cargo test`：10 passed（0.02s）

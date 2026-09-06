@@ -1,7 +1,7 @@
 # AGENTS.md — 给后续 agent 的环境事实与教训
 
 > 本文件记录这台机器上排查过的真实事故。接手任务前先读完这一页，可以少走几小时弯路。
-> 详细复盘见 [docs/postmortem-2026-09-04-webview2-114.md](docs/postmortem-2026-09-04-webview2-114.md)。
+> 详细复盘见 [docs/postmortem-2026-09-04-webview2-114.md](docs/postmortem/postmortem-2026-09-04-webview2-114.md)。
 
 ## 项目一句话
 
@@ -55,14 +55,14 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
   8. **图标在溢出浮层内的格子会随邻居图标增减漂移**（S2 实测：一轮风暴前后从 (2363,1312) 挪到 (2221,1350)）——每次点击前现取 GetRect，别复用上一次的矩形。
   9. **配方 v3（Phase 0 冒烟沉淀，成品 `%TEMP%\p0-smoke\p0-tray2.ps1`）：浮层开着时 6002 直投是首选开菜单方式**——`PostMessage(tray_icon_app, 6002, uID, WM_RBUTTONUP)`，不动物理鼠标，Phase 0 四次菜单动作（Show/Restart/Open-browser/Quit）全部一次命中；**物理右键在用户在场时不稳**（同机同位置四轮 no-menu，即第 4 条"菜单秒关"模式），降级为兜底。**uID 实测为 2**，别假设是 1，仍按 1..8 扫描取首个 `hr=0 且 T<任务栏顶` 的。
   10. **`FindWindowW('Tauri Window')` 本机返回 0，但 EnumWindows+GetClassName 能看到该窗口**（跨 DPI 感知上下文的 Win10 怪癖）——窗口查找/可见性判据一律走 EnumWindows，别用 FindWindowW。
-  11. **`MainWindowHandle` 不能当可见性代理**：主窗口隐藏后会回退到 single-instance 插件的可见辅助窗口（类名 `com.whyiyhw.dshdesk-sic`），句柄非 0——判可见性用第 10 条的 EnumWindows + `IsWindowVisible`。
+  11. **`MainWindowHandle` 不能当可见性代理**：主窗口隐藏后会回退到实例守卫的隐藏辅助窗口（S23 前为 single-instance 插件窗 `com.whyiyhw.dshdesk-sic`，S23 起为自研守卫窗 `com.whyiyhw.dshdesk-<instance>-sic`），句柄非 0——判可见性用第 10 条的 EnumWindows + `IsWindowVisible`。
   12. **S5a 后托盘菜单为 6 项**（Show / Open in browser / Restart / Edit config / Check for updates / Quit），行数写死 5 的旧脚本会点错行——Phase 2 会话成品 `%TEMP%\p2-smoke\tray.ps1` 已参数化 `-Rows`（默认 6），同目录还有 launch/census/hotkey/second/close/winvis/walkthrough 全套（launch/second 的 exe 路径已参数化，可指向安装版）。
   13. **配方 v4（S7 验收沉淀，2026-09-05 宿主重启后）：开溢出浮层的首选 = `Win+B`（焦点到托盘）+ `Enter`（点 chevron），脚本内用 `keybd_event(0x5B/0x42/0x0D)` 序列**——宿主重启后物理点击 chevron（SetCursorPos+mouse_event 与 CUA 点击两种姿势、多组坐标含任务栏 Button 子窗口实测量得的 (2369,1421)）全部无效，浮层就是不开；键盘序列一次成功。成品 `D:\tmp\s7-smoke\s7-step3.ps1`（含图标饱和度采样：彩色≈17.5 vs 灰≈1.1）。chevron 的矩形可由 Shell_TrayWnd 的 TrayNotifyWnd 下首个空文本 `Button` 子窗口 GetWindowRect 得到（find-chevron.ps1）。
   14. **GetRect 在浮层内格子重排后可能返回滞后的旧格**（S7 实测：restart 后格子漂了，GetRect 仍回旧位、拍到纯白空格 bright=248）——浮层整体截图 + 人工/视觉确认图标在场，比单格采样更稳。
-- **并行 ZCode 会话共用真机是"启动即退出"的另一来源**（S4 实测）：对面会话分离式启动的实例占住 single-instance 锁，我的测试实例被静默弹回（无任何日志）。**每个测试阶段前都清点 `Get-Process dsh-desk`**，不能只在开工时查一次；对工作树的共享编辑（lib.rs/docs/AGENTS.md）每次写前重读。
+- **并行 ZCode 会话共用真机是"启动即退出"的另一来源**（S4 实测）：对面会话分离式启动的实例占住同实例守卫锁（S23 前为全局 single-instance 锁、S23 起按实例名分锁），我的测试实例被静默弹回（无任何日志）。**每个测试阶段前都清点 `Get-Process dsh-desk`**，不能只在开工时查一次；对工作树的共享编辑（lib.rs/docs/AGENTS.md）每次写前重读。
 - **并行会话在场时,环境谜题排障第一步是"读对面刚落盘的东西"**（S2 教训，浪费约 40 分钟）：托盘图标"消失"、6002 失效等怪象排查前，先 `ls docs/` 看有没有并行会话的新验证记录、`tail dsh-desk.log` 找外国实例轨迹指纹（例：日志里 `WebView2 runtime 118.0.9999.0` = S4 的注册表测试正在进行；低代数号的 `superseded generation` = 别的会话的新实例）。共享真机上，docs/ 与共享日志是排障第一现场。
 - **残留的 `pnpm tauri dev` 监视链会复活实例**：改源码触发 watcher 重编译重启，吃掉新构建并干扰测试。开测前 `tasklist` 查 `pnpm→node tauri.js→cargo→dsh-desk` 链整树 `taskkill /T /F`；杀 pnpm 前先认命令行，别误杀用户自己的 `pnpm dsh --profile web`。
-- **single-instance 会让测试 exe 立即 `exit 0`**（礼让给旧实例并 show+focus）——看到"启动即退出"先查旧实例（含并行会话的），不是崩溃。
+- **同实例守卫会让测试 exe 立即 `exit 0`**（礼让给旧实例并 show+focus；S23 前为全局 single-instance 插件、S23 起按实例名）——看到"启动即退出"先查同实例旧进程（含并行会话的），不是崩溃。
 - **进程清理一律 `taskkill /PID x /T /F`**：PowerShell `Stop-Process -Force` 不杀子树，会留 dsh 孤儿污染 Quit 清点（曾两次误判成产品泄漏）。但注意下一条——强杀风暴有副作用。
 - **强杀实例后 WebView2 首导航偶发 `tauri.localhost`→"127.0.0.1 拒绝连接"错误页**（脏 profile）：杀净 `msedgewebview2` 再启动即愈；错误页上 eval 仍可执行（`location.replace` 能把窗口导航走）。
 - **窗口 401 的真根因（2026-09-06 代理实证,推翻 09-05 的"脏 cookie 库"结论）**：dsh 的认证 cookie 是 SameSite=Strict,而壳的初始页在 `tauri.localhost`、GUI 在 `127.0.0.1`——**从初始页直接 `location.replace(tokenURL)` 是跨站发起的导航链,Chromium 在这条链上既不落盘也不回发 Strict cookie**,`/?token=` 的 303 落到 `/` 时无 cookie → 401。日志反代实测（`D:\tmp\ux-verify\proxy.cjs`,夹在假 dsh 与真服务器中间）：链上请求 `cookie-sent: NONE`,而 401 页自己发起的 favicon 请求带 cookie。**"删 Cookies 能治"是巧合性误诊**（删后首启照样 401,已复验）;**修复在应用内**：open_gui 改同源跳板（先落 origin、再从同站上下文换 token,sessionStorage 按 token 单发,`lib.rs open_gui`）。**"netstat ESTABLISHED = GUI 在线"的金标准就此作废**——401 流程自身的 keep-alive 连接同样 ESTABLISHED,S1/本批的部分"契约 1 通过"实际是假阳性;**唯一可信判据 = 窗口内容**（屏幕区域 CopyFromScreen 截图 + OCR;PrintWindow 对 GPU 合成页出黑帧,别用）。旧处置（杀专属 webview + 删 Cookies）只在"存储层真脏"的独立病症下仍有意义,但 401 不再靠它。
@@ -70,12 +70,12 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 ### S9/S13 与发布链路补充（Phase 3 交付沉淀，2026-09-05）
 
 - **tauri-plugin-window-state 的默认 flags 是陷阱**：`all()` 含 VISIBLE 与 MAXIMIZED，两个都会在启动期把 `visible:false` 的窗口拉出来（VISIBLE→`show()+set_focus()`；MAXIMIZED→`maximize()`→Win32 `SW_MAXIMIZE`＝激活并显示）。dsh-desk 只保 SIZE|POSITION。另：插件的 `Moved` 处理器不设最大化守卫，最大化会话会把缓存位置写成显示器原点，恢复时窗口落在 (-9,-9)——无害已知瑕疵。
-- **启动期文件副作用（轮转/截断）必须放在 single-instance 判定之后**（setup 内）：第二实例在 builder 期 single-instance init 里 `exit(0)`，到不了 setup；放 run() 顶部会让二次启动把运行中实例的活日志腰斩进 `.old`。
+- **启动期文件副作用（轮转/截断）必须放在实例判定之后**：S23 前第二实例死在 builder 期 single-instance init；S23 起守卫在 setup 最前（claim_or_exit）里 `exit(0)`，轮转紧随其后——不变式都是"弹回路径不得产生文件副作用"。放 run() 顶部仍会让二次启动把运行中实例的活日志腰斩进 `.old`。
 - **就绪计数基线会被 S13 日志轮转作废**：启动前取的 `'dsh web: http'` 计数基线在轮转后（新日志从零计）永远追不上，launch 类脚本必须在启动后（等轮转落定）重取基线；就绪与可见的先后判据用"首次可见瞬间日志里是否已有就绪行"，别用两个轮询时间戳相减（同周期内先盖 visible 戳是测量伪影，曾 1ms 假违约）。成品 `%TEMP%\p3-smoke\launch-probe.ps1`。
 
 ### UI 验证仪器与 toast/主题环境事实（S14-S20 交付沉淀，2026-09-06）
 
-> 成套脚本在 `D:\tmp\ux-verify\`（common/phase1-6/trayv2/census），下一轮 UI 验证直接复用。验证记录 [docs/verification-2026-09-06-S14-S20.md](docs/verification-2026-09-06-S14-S20.md)。
+> 成套脚本在 `D:\tmp\ux-verify\`（common/phase1-6/trayv2/census），下一轮 UI 验证直接复用。验证记录 [docs/verification-2026-09-06-S14-S20.md](docs/verification/verification-2026-09-06-S14-S20.md)。
 
 - **toast 验证的判定层级（本机 Focus Assist 常开）**：NVIDIA Overlay 全屏自动规则把 FA 拉起（`QuietHoursServiceState=2`），**所有应用的 toast 显示被抑制**（WinRT 原生控制 toast 也不显示；杀 overlay+注册表置 0 无用，WpnService 内存态不受注册表控制且无权重启）。确定性仪器 = **Action Center 入库时间戳**：HKCU `...\Notifications\Settings\<AUMID>\LastNotificationAddedTime` 触发前后对比（per-app，未注册 AUMID 的控制 toast 连入库都没有——别拿它当仪器）；"时间戳更新 + 应用日志无 `toast failed to show`" = 送达级证据，显示级引用 S7 同通道目验。
 - **WebView2 把 `prefers-color-scheme` 钉死为 light**（2026-09-06 实测：暗色 app mode 下媒体查询仍不命中，AppsUseLightValue/SystemUsesLightValue 双置 0 + WM_SETTINGCHANGE 广播都无效，连窗口标题栏都亮）——暗色实现一律 Rust 读注册表真值（`reg query ...AppsUseLightValue` 0=dark）经 eval 注入，且**注入必须只在"自家页面 helper 存在"分支内**（`document.getElementById('starting')` 之类守卫），不得碰上游 GUI 页面 DOM；starting 页还有托盘 Show/热键/二次启动三条不经 panel eval 的显示路径，show 后都要补 stamp。
@@ -91,7 +91,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 
 ### S22/S23 多实例与控制台窗（2026-09-06 交付沉淀，s22-s23 分支）
 
-> 验证记录 [docs/verification-2026-09-06-S22.md](docs/verification-2026-09-06-S22.md) / [docs/verification-2026-09-06-S23.md](docs/verification-2026-09-06-S23.md)。Phase B（默认实例 §2.4 全量走查）机器空闲后补，未过不并 main。
+> 验证记录 [docs/verification-2026-09-06-S22.md](docs/verification/verification-2026-09-06-S22.md) / [docs/verification-2026-09-06-S23.md](docs/verification/verification-2026-09-06-S23.md)。Phase B（默认实例 §2.4 全量走查）机器空闲后补，未过不并 main。
 
 - **tauri-plugin-single-instance 2.4.4 锁名只认 app identifier（vendored 源码实证），与 CLI 参数无关**——多实例必须弃用插件自研分锁（mutex `{identifier}-{instance}-sim` + 隐藏窗 `-sic/-siw` + WM_COPYDATA）。注意新锁名与旧插件锁名不同（`-default-` 后缀）：新旧构建并存的一次性升级边缘，互不弹回，已接受。老脚本按类名 `com.whyiyhw.dshdesk-sic` 找守卫窗的，改找 `com.whyiyhw.dshdesk-default-sic`。
 - **cookie 不分端口是跨实例互踩的根源**：多个 dsh 服务都在 127.0.0.1，共享一个 WebView2 cookie 库必互相覆盖认证 cookie（cf8f582 修的 401 同族）——多窗口产品形态必须每实例独立 WebView2 剖面（命名实例 `LOCALAPPDATA\dsh-desk\instances\<name>\webview`；缓存也别放 ROAMING）。**浏览器侧例外是设计**：Open in browser 共享浏览器 cookie 库，文档已注明。
@@ -100,11 +100,11 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **窗口从 tauri.conf.json 挪到代码创建后**：window-state 插件经 `on_window_ready` 钩子照常恢复几何（对任何创建路径生效，vendored 源码核实）；`.data_directory()` 是唯一能按实例定向 WebView2 剖面的口子（tauri 在 Windows 强制设剖面但尊重显式指定）。
 - **守卫投递用 `SendMessageTimeoutW(SMTO_ABORTIFHUNG, 3s)`** 不用裸 SendMessageW：幸存者主线程在 Quit 杀树期间不泵消息，裸投递会把二次启动无限卡死。
 - **本批次两轮独立审查都抓到真问题**（S22 的 dev 控制台语义、S23 的 `--instance default` 同锁不同目录 P1）——"无作者上下文审查"门禁继续值回成本。
-- **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。
+- **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。**S21 落盘时注意**：其验证记录按新约定放 `docs/verification/`（本批已把 docs/ 拆为 verification/ + postmortem/ 子目录并全量改链，对面未提交的 §5 行若按旧根级路径链接需改指 `verification/verification-2026-09-06-S21.md`）。
 
 ### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
 
-> 完整复盘见 [docs/postmortem-2026-09-05-host-hyperv-broken.md](docs/postmortem-2026-09-05-host-hyperv-broken.md)。一句话：**本机 Hyper-V 载荷停留在 2020 版**（vmms/vmcompute 19041.320、vmbus.sys RTM .1、vmbusroot.sys 缺失，内核 .6456）——任何 guest 活不过 90 秒（Gen1 冻结、Gen2 Worker 18508 自关机）、心跳永不连，Docker Desktop 的 VM 自 09-01 起报同款 33101；DISM/SFC 报健康、功能禁用重启用重展开同版旧货、重启无效。**Phase 2 虚机门禁已按用户决策放弃执行**，想跑 VM 相关验证先修宿主（就地修复升级）或换机。
+> 完整复盘见 [docs/postmortem-2026-09-05-host-hyperv-broken.md](docs/postmortem/postmortem-2026-09-05-host-hyperv-broken.md)。一句话：**本机 Hyper-V 载荷停留在 2020 版**（vmms/vmcompute 19041.320、vmbus.sys RTM .1、vmbusroot.sys 缺失，内核 .6456）——任何 guest 活不过 90 秒（Gen1 冻结、Gen2 Worker 18508 自关机）、心跳永不连，Docker Desktop 的 VM 自 09-01 起报同款 33101；DISM/SFC 报健康、功能禁用重启用重展开同版旧货、重启无效。**Phase 2 虚机门禁已按用户决策放弃执行**，想跑 VM 相关验证先修宿主（就地修复升级）或换机。
 
 - **「所有 guest 都活不过一分钟」= 先做宿主二进制版本审计**（`Get-Item vmms.exe/vmcompute.exe/vmbus.sys/ntoskrnl.exe` 的 VersionInfo 一组对比），这轮它本可以是第一条命令。
 - **guest 屏幕 ground truth = WMI `GetVirtualSystemThumbnailImage`**（root\virtualization\v2；成品 `D:\tmp\vm-gate\vm-gate-diag7c.ps1`）：vmconnect 窗口会缩放/掉线/自退出，全不可靠；帧对比用逐像素 diff，相同字节=内容未变（CDN 上传也按字节去重，喂视觉前先重编码换名）。
@@ -120,7 +120,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - lib.rs 生命周期语义自此由代数标记统治：spawn/主动 kill/已上报退出各 mint 一代，watcher/timer 只认本代；Restart 与 Retry 同走 `run_lifecycle_cycle` 串行路径（杀净→等退→再起）。**日志里 `superseded generation (N)` 的 N 单调递增，可反推生命周期轨迹**——排障时它是"谁杀了谁"的第一手证据。
 - 串行化语义（"未杀先起"禁止）耦合 AppHandle 无法单测，防线 = 真机 Restart 风暴 + Quit 零残留清点（S2 验收判定的做法，见验证记录）；纯状态代数部分有 4 条 cargo test 锚定。
 - 回合末审查曾抓到 **P1**：child 交接若不在 claim_exit 同一临界区完成，微秒窗口内旧 watcher 可把 Child take 走直接 drop（无 taskkill）——"EOF ≈ 进程退出"只是假设（cmd shim 场景不成立），交接原子性是 Quit 零残留的隐性前提。改动生命周期代码时此不变量必须保持：**bump、take、清 url 三件事要么同临界区，要么有明确的所有者交接**。
-- S2 验收记录见 [docs/verification-2026-09-05-S2.md](docs/verification-2026-09-05-S2.md)。
+- S2 验收记录见 [docs/verification-2026-09-05-S2.md](docs/verification/verification-2026-09-05-S2.md)。
 
 ### S6 图标管线与 cursor-agent CLI（S6 交付沉淀，2026-09-05 深夜）
 
@@ -128,7 +128,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - `pnpm tauri icon <svg>` 直接吃 SVG（内置 resvg），默认**额外产出 `ios/`、`android/` 子目录**，Windows 优先项目每次生成后记得删。
 - **视觉类交付（图标/UI/截图）必须由"能看见的复核者"逐轮目检**：cursor-agent 盲画字母贝塞尔两轮自报成功（v1 读作 "D21"、R1 读作 "bsP"），全靠看图推翻；改用 opentype.js 提取系统字体轮廓（`C:\Windows\Fonts\segoeuib.ttf`）一次收敛。agent 自报成功 ≠ 正确。
 - cursor-agent CLI：官方二进制在 `%LOCALAPPDATA%\cursor-agent`（已登录）；npm 的 `cursor-agent` 包是同名第三方库（`bin` 为空），勿装。无头用法 `-p "…" --force --trust --output-format stream-json`；它会加载 `~/.cursor/mcp.json`，其中 `ones`（mcp-remote OAuth）会**卡死无头会话**——已在 CLI 侧 `mcp disable` 两个服务器（IDE 不受影响，恢复用 `cursor-agent mcp enable <名>`）。判断它是否真在干活：看盘上文件时间戳 + stream-json 事件，**别看主进程 CPU**（常年接近 0，worker 才干活）。
-- S6 验收记录见 [docs/verification-2026-09-05-S6.md](docs/verification-2026-09-05-S6.md)；真机托盘实时目视与开始菜单目视已于 2026-09-05 在 S3 安装包上补齐（exe 内嵌图标抽取 + 溢出浮层截图，见 [verification-2026-09-05-S3.md](docs/verification-2026-09-05-S3.md)）。
+- S6 验收记录见 [docs/verification-2026-09-05-S6.md](docs/verification/verification-2026-09-05-S6.md)；真机托盘实时目视与开始菜单目视已于 2026-09-05 在 S3 安装包上补齐（exe 内嵌图标抽取 + 溢出浮层截图，见 [verification-2026-09-05-S3.md](docs/verification/verification-2026-09-05-S3.md)）。
 
 ### S3/S12/S5a 发布链路（Phase 2 交付沉淀，2026-09-05）
 
@@ -174,7 +174,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **前置纪律**：worktree 只包含**已提交**的内容，未跟踪文件不会跟着走——开新 worktree 前先确认 `docs/`、`.agents/` 等已提交（即 Phase 0 完成）。计划文档与 skill 只在 main 上修改，各 worktree 勤 rebase 主线获取最新规范。
 - **可并行**（文件不相交，可随时提前开独立分支）：S3 CI（纯新增 `.github/workflows/`）、S6 图标（替换 `src-tauri/icons/`）、S12 发布物料（README + 版本字段策略）。
 - **须串行**（都动 `src-tauri/src/lib.rs` 的生命周期区域）：S1 → S2 → S4 / S5a。S2 依赖 S1 的定时器语义，顺序不可换，一律在主工作树按序做。
-- **编译可并行，真机运行必须串行**：本应用是单实例 + 托盘常驻 + 全局热键，全局状态在 `%APPDATA%\dsh-desk\`（config.json、日志）。同时跑两个构建，第二个会被 single-instance 弹回第一个，且互相踩配置/日志/热键注册。dsh 服务端端口冲突已由 config.json 的 `--port 0` 解决（见上文），但应用层冲突仍在；且真机验证本身需要完整权限环境（见上文沙箱事实）。同一时间只验证一个实例，验证完彻底退出（确认无 dsh/node 残留进程，spec §2.4 契约第 6 条）再测下一个。
+- **编译可并行，真机运行必须串行**：本应用是单实例 + 托盘常驻 + 全局热键，全局状态在 `%APPDATA%\dsh-desk\`（config.json、日志）。同一实例名的两个进程会被实例守卫弹回（S23 前 single-instance 插件全局弹回）；**S23 起不同 `--instance` 名可共存**——并行验证优先给测试实例独立实例名（各自配置/日志/cookie），但默认实例（无参）仍同一时间只允许一个。dsh 服务端端口冲突已由默认配置的 `--port 0` 解决（见上文）；且真机验证本身需要完整权限环境（见上文沙箱事实）。同一时间只验证一个实例，验证完彻底退出（确认无 dsh/node 残留进程，spec §2.4 契约第 6 条）再测下一个。
 - **构建成本**：每个 worktree 独立 `target/` 与 `node_modules`，冷构建约 2 分钟/处。只在当前要做真机验证的 worktree 跑完整 `pnpm tauri build`，其余 worktree 停在 `cargo check`。
 - **合并**：短命分支，完成即 rebase main → 合并 → 删除分支并 `git worktree remove <path>` 清理。
 
