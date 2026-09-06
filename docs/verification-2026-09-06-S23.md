@@ -2,7 +2,7 @@
 
 日期：2026-09-06 · 分支：`s22-s23`（worktree，S21 由并行会话在主树进行） · 构建物：`D:\tmp\s23-verify\dsh-desk.exe`（release，GUI 子系统）
 
-**状态：Phase A（命名实例语义）全过；Phase B（默认实例 §2.4 全量走查）待机器空闲补测**——验证期间用户安装版（pid 16792）在跑且不可替用户决定退出（占着 Alt+Shift+D、共享默认 WebView2 cookie 库会互踩认证）。仪器与脚本就地待命，机器一静即可跑。
+**状态（终版）：Phase A + Phase B 全过，合并门禁清空**。Phase B 于 2026-09-06 晚（用户退出安装版、机器独占后）在 **v0.3.0 终版 release**（e54c53b 同源重建，横幅 v0.3.0）上完成。
 
 ## Phase A — 命名实例（与用户在跑实例零干扰地完成）
 
@@ -35,9 +35,26 @@
 
 **修复后重建 release 全量复验 Phase A（本轮证据即最终构建）**：vtest 11.5s / vtest2 12.4s 就绪、三进程并存、双 hwnd、consoleHits=0、vtest 认证 OCR（本地构建/工作区/新会话）、vtest2 认证后 vtest 仍认证（5 处 GUI 标记）、WM_CLOSE 藏窗→同实例重启 exit 0→窗口复活（SendMessageTimeoutW 路径）；新目录布局核对（APPDATA: config/log；LOCALAPPDATA: webview 18M）；杀树 18 进程零残留。
 
-## Phase B — 待补（默认实例 §2.4 全量走查 + 热键归属）
+## Phase B — 默认实例 §2.4 全量走查（2026-09-06 晚，v0.3.0 终版）
 
-机器独占约 10 分钟后执行：默认实例六契约（含托盘四项程序化驱动、热键 Alt+Shift+D 归默认实例的切换实证、二次启动唤醒、Quit 零残留 + Quit 路径 taskkill 闪窗的观察器复核）+ 默认路径零变化核对（`%APPDATA%\dsh-desk\config.json`/日志不迁移、WebView2 剖面仍 `%LOCALAPPDATA%\com.whyiyhw.dshdesk`、`.window-state.json` 文件名不变）。
+仪器：`pb1-launch.ps1`（默认日志就绪计数+控制台窗树归属观察）、`pb-flyout.ps1`（Win+B 开溢出浮层，配方 v4）、`p2-smoke/tray.ps1`（6002 直投开菜单 + 实测矩形按行点击 + 效果验证重试）、`pb-quit.ps1`（Quit 全程 60ms 紧凑控制台窗观察器）、Umi-OCR。
+
+| # | 契约 | 结果 |
+|---|---|---|
+| 1 | 就绪行 → 窗口 → 认证 GUI | ✅ 11.7s 就绪；横幅 `v0.3.0`；OCR = 认证 GUI（会话输入页）；**零降级行**（默认实例持有热键）；consoleHits=0 |
+| 2 | 托盘六项全部可用 | ✅ Show（6002 直投一次命中，窗口显）✓ Restart（新就绪行 22>21，**跨端口重启后 OCR 复认仍认证**——401 修复路径复验）✓ Edit config（日志确认打开默认实例路径 `…\dsh-desk\config.json`）✓ Check updates（`no newer release than 0.3.0; newest published is v0.2.1` 语义正确）✓ Open in browser（应用日志行 + 浏览器侧证据：Chrome 窗标题变 "DSH 本地构建 - Google Chrome"）✓ Quit（一次命中）✓ |
+| 3 | 热键 Alt+Shift+D 切换 | ✅ True→False→True 双向两轮（p2-smoke hotkey 和弦） |
+| 4 | 同实例二次启动唤醒 | ✅ exit 0 + 幸存者窗口成为前台 + **横幅/就绪行零增量**（弹回零副作用实证）+ 进程数仍 1 |
+| 5 | 关窗藏托盘、服务继续 | ✅ WM_CLOSE（产品路径）→ 隐藏；server node 1→1 存活；首关一次性标记落盘（marker False→True；toast 送达级=标记+无失败日志，本机 FA 抑制同 S14-S19 口径） |
+| 6 | Quit 零残留 | ✅ dsh-desk=0；应用 spawn 的 node（pid 17308/21376）全死；在场的 4 个 node 经甄别全为 ZCode MCP 服务器（`@z_ai/mcp-server`/`mcp-remote`，父链 cmd.exe、与应用 pid 无交集）——非残留 |
+
+**S22 悬欠项就此关闭**：Quit 全程 60ms 紧凑观察器 consoleHits=0——应用自身 Quit 路径的 taskkill 亦无控制台窗闪现（此前仅代码锚定）。
+
+**附带回归证据**：S9 窗口几何恢复照常（恢复用户保存几何，含已知 (-9,-9) 最大化会话瑕疵——同文件同插件同行为，非 S23 回归）；S13 横幅含完整启动命令；S19 首关提示按一次性语义工作。
+
+Phase B 观察备忘：Edit config 行效果确认用了 3 次重试（系统查看器启动 >5s 超出首轮效果窗，菜单动作本身一次命中；查看器=Cursor，最小化处理未杀）；Open in browser 落在用户既有 Chrome 的新标签页（浏览器 cookie 共享面 = README 已注明的文档化例外）。
+
+环境还原：window-state 恢复备份、tray-hint 标记删除（还原用户"未见过提示"状态）、Chrome 还原前台、Umi-OCR 关闭、instances 目录清除、dsh-desk 进程 0、config.json 未被改动。
 
 ## 测试锚（cargo test 22 passed）
 
