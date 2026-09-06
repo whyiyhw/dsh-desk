@@ -935,18 +935,46 @@ fn set_tray_status(app: &AppHandle, running: bool) {
 }
 
 /// Navigate the main window to the authenticated GUI URL.
+///
+/// The exchange must be initiated from a page AT the server's origin: the
+/// auth cookie is SameSite=Strict, and a chain started cross-site
+/// (tauri.localhost → 127.0.0.1) neither stores nor sends it — the
+/// `/?token=…` 303 then lands on `/` without the cookie and the window is
+/// stranded on the server's 401 page (proxy-verified 2026-09-06: the
+/// follow-up request carried no Cookie header at all). So the navigation
+/// hops: first to the bare origin (any response — it just has to put the
+/// webview on the right site), then, evaluated from that page, to the token
+/// URL. The follow-up evals are one-shot per token via sessionStorage; the
+/// loop only exists because a script cannot survive the navigation it
+/// triggers, and evals fired mid-navigation are dropped harmlessly.
 fn open_gui(app: &AppHandle, url: &str) {
     if let Some(window) = app.get_webview_window("main") {
-        let script = format!(
-            "window.location.replace({});",
-            serde_json::to_string(url).unwrap_or_else(|_| "\"\"".into())
-        );
+        let origin = url.split('/').take(3).collect::<Vec<_>>().join("/"); // scheme://host:port
+        let url_js = serde_json::to_string(url).unwrap_or_else(|_| "\"\"".into());
+        let origin_js = serde_json::to_string(&origin).unwrap_or_else(|_| "\"\"".into());
         let _ = window.show();
         // The page is still index.html until the replace lands — a dark-mode
         // user would see one light frame here.
         stamp_page_theme(&window);
         let _ = window.set_focus();
-        let _ = window.eval(&script);
+        let hop = format!(
+            "(function() {{ var o = {origin_js}, t = {url_js}; \
+               if (location.origin !== o) {{ location.replace(o + '/'); return; }} \
+               if (sessionStorage.getItem('dshdesk-open') !== t) {{ \
+                 sessionStorage.setItem('dshdesk-open', t); \
+                 location.replace(t); \
+               }} \
+             }})();"
+        );
+        // First eval now (covers the same-origin Restart case); the rest wait
+        // for the hop to land before the exchange can fire.
+        let _ = window.eval(&hop);
+        std::thread::spawn(move || {
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(300));
+                let _ = window.eval(&hop);
+            }
+        });
     }
     set_tray_status(app, true);
 }

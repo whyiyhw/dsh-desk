@@ -74,3 +74,15 @@
 3. **WebView2 的 UIA 树不可用**(Chromium 懒激活),web 内容断言走"窗口可见=面板上屏 → PrintWindow 截图 → Umi-OCR";web 按钮点击走键盘 Tab+Enter(隐藏元素跳过焦点)。
 4. Umi-OCR 启动:`D:\soft\Umi-OCR_Paddle\Umi-OCR.exe`,模型预热约 25s,之后 `python ~/.agents/skills/ocr/scripts/ocr.py` 直用。
 5. 中断的构建会留损坏 PDB(LNK1285)——删 `target/debug/deps/*.pdb` 重链即愈。
+
+## 附录:用户验收时暴露的窗口 401(批次外 P0,当轮修复)
+
+用户在真机查看 S14-S20 构建时窗口显示 "dsh web authentication required; reopen the URL printed by dsh web"。排查链与结论:
+
+1. **旧处置无效**:按 09-05 台账"杀专属 webview+删 Cookies+重启"执行,首启仍 401(两代服务 7862/8092 同症)。
+2. **服务端无罪**:无头探针(自起 `dsh web --port 0`)复现 token→303+Set-Cookie→手工带 cookie `GET /`=**200**。上游自 09-04 起零提交,代码与昨日"正常"时一致;WebView2 仍 152。
+3. **webview 侧铁证(日志反代)**:`D:\tmp\ux-verify\proxy.cjs` 监听 8890 转发探针 8889,假 dsh.cmd 让应用 webview 走真实导航,代理记录:①`GET /?token=` → 303+Set-Cookie(cookie 未存入);②重定向链 `GET /` → **cookie-sent: NONE** → 401;③401 页自发起的 `GET /favicon.ico` → **cookie-sent: 有**(旧 cookie)。⇒ dsh 认证 cookie(SameSite=Strict)在**跨站发起的导航链**(初始页 `tauri.localhost` → `127.0.0.1`)上不被 Chromium 落盘/回发;同站上下文一切正常。
+4. **修复**:open_gui 同源跳板——eval 先 `location.replace(origin+'/')`(落 origin,响应内容无所谓),落定后(30×300ms 重试 eval)从该页 `location.replace(tokenURL)`,同站发起 → Strict cookie 落盘+回发 → 200。sessionStorage 以 token 为单发标记(同端口 Restart 换新 token 也能触发;GUI 落定后重试 eval 全为 no-op)。
+5. **验证(窗口内容=唯一金标准)**:修复构建+真实 config 启动,屏幕区域截图(PrintWindow 对 GPU 合成页黑帧,须 CopyFromScreen)OCR 出真实会话列表(新建任务/搜索/自动化/插件市场/用户会话)——**非 401**;用户当前实例复验同结果。
+6. **判定口径更正**:netstat `msedgewebview2↔node ESTABLISHED` 不再可信——401 流程自身的 keep-alive 连接同样 ESTABLISHED(本附录 3 的三条请求就是三条 ESTABLISHED)。凡"GUI 在线"结论一律以窗口内容(截图 OCR/AX 正文)为准。S1 记录中 AX 正文判过"非 401"(当时真实在线),但 09-05 22:40 之后的各轮走查以 netstat 为准——其中可能存在假阳性,回溯性风险已知并记录。
+7. 诊断副产品:外部浏览器打开认证 URL(用户点过 Open in browser)不受影响——浏览器无跨站发起方,Strict cookie 正常;这解释了"浏览器好用、壳窗口 401"的经典分叉。
