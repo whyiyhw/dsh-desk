@@ -91,7 +91,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 
 ### S22/S23 多实例与控制台窗（2026-09-06 交付沉淀，s22-s23 分支）
 
-> 验证记录 [docs/verification-2026-09-06-S22.md](docs/verification/verification-2026-09-06-S22.md) / [docs/verification-2026-09-06-S23.md](docs/verification/verification-2026-09-06-S23.md)。Phase B（默认实例 §2.4 全量走查）机器空闲后补，未过不并 main。
+> 验证记录 [docs/verification-2026-09-06-S22.md](docs/verification/verification-2026-09-06-S22.md) / [docs/verification-2026-09-06-S23.md](docs/verification/verification-2026-09-06-S23.md)。Phase B（默认实例 §2.4 全量走查）已于 2026-09-06 晚在 v0.3.0 终版全过（六条契约 + Quit 路径 taskkill 闪窗观察 0 命中），合并门禁清空——只待并行 S21 落盘后执行合并。
 
 - **tauri-plugin-single-instance 2.4.4 锁名只认 app identifier（vendored 源码实证），与 CLI 参数无关**——多实例必须弃用插件自研分锁（mutex `{identifier}-{instance}-sim` + 隐藏窗 `-sic/-siw` + WM_COPYDATA）。注意新锁名与旧插件锁名不同（`-default-` 后缀）：新旧构建并存的一次性升级边缘，互不弹回，已接受。老脚本按类名 `com.whyiyhw.dshdesk-sic` 找守卫窗的，改找 `com.whyiyhw.dshdesk-default-sic`。
 - **cookie 不分端口是跨实例互踩的根源**：多个 dsh 服务都在 127.0.0.1，共享一个 WebView2 cookie 库必互相覆盖认证 cookie（cf8f582 修的 401 同族）——多窗口产品形态必须每实例独立 WebView2 剖面（命名实例 `LOCALAPPDATA\dsh-desk\instances\<name>\webview`；缓存也别放 ROAMING）。**浏览器侧例外是设计**：Open in browser 共享浏览器 cookie 库，文档已注明。
