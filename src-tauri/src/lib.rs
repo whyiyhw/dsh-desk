@@ -120,33 +120,369 @@ impl Default for DeskConfig {
     fn default() -> Self {
         Self {
             command: "dsh".into(),
-            args: vec!["--profile".into(), "web".into(), "--no-open".into()],
+            // S23: --port 0 lets the OS pick a free port — mandatory once
+            // more than one instance (or another dsh) may be running, and
+            // harmless otherwise because the shell follows the URL the
+            // server prints instead of assuming a port. Existing config
+            // files are never rewritten.
+            args: vec![
+                "--profile".into(),
+                "web".into(),
+                "--no-open".into(),
+                "--port".into(),
+                "0".into(),
+            ],
             cwd: None,
         }
     }
 }
 
-fn config_path() -> Option<PathBuf> {
-    std::env::var("APPDATA")
-        .ok()
-        .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("config.json"))
+/// S23: the instance this process owns. `--instance <name>` selects a named
+/// instance with its own config, log, tray hint, window-geometry file,
+/// WebView2 profile, window title, and dsh server; the default instance
+/// (no flag) keeps the historical layout and behavior byte for byte.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum InstanceId {
+    Default,
+    Named(String),
 }
 
-fn log_path() -> Option<PathBuf> {
+/// Process-lifetime identity, set once at the top of run() before anything
+/// derives a path from it. Tests build InstanceId values directly and call
+/// the `_for` functions instead of touching this global.
+static INSTANCE: OnceLock<InstanceId> = OnceLock::new();
+
+fn instance() -> InstanceId {
+    INSTANCE.get().cloned().unwrap_or(InstanceId::Default)
+}
+
+/// Instance names become directory names and window/mutex identifiers —
+/// keep them conservative: 1..=32 chars of ASCII letters, digits, `-`, `_`,
+/// starting with an alphanumeric (so a stray `--flag` can't read as a name).
+/// `default` is reserved: the no-flag instance owns that identity — a named
+/// instance taking it would share the default's lock while using different
+/// files (the worst possible pairing).
+fn valid_instance_name(name: &str) -> bool {
+    if name == "default" {
+        return false;
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Parse `--instance <name>` and `--instance=<name>` from the full argv.
+/// Anything else (including unknown flags) is ignored: tauri and WebView2
+/// may append arguments of their own, and the shell refuses to guess.
+fn parse_instance_arg(argv: &[String]) -> Result<InstanceId, String> {
+    let mut args = argv.iter();
+    while let Some(arg) = args.next() {
+        let value = if let Some(value) = arg.strip_prefix("--instance=") {
+            Some(value.to_string())
+        } else if arg == "--instance" {
+            args.next().cloned()
+        } else {
+            continue;
+        };
+        return match value {
+            Some(name) if valid_instance_name(&name) => Ok(InstanceId::Named(name)),
+            Some(name) => Err(format!(
+                "invalid --instance name `{name}` (1-32 chars of A-Z a-z 0-9 - _, starting \
+                 alphanumeric)"
+            )),
+            None => Err(
+                "--instance requires a name (1-32 chars of A-Z a-z 0-9 - _, starting \
+                 alphanumeric)"
+                    .into(),
+            ),
+        };
+    }
+    Ok(InstanceId::Default)
+}
+
+/// Everything a named instance persists, under one roof. The default
+/// instance keeps the historical flat `%APPDATA%/dsh-desk` layout — existing
+/// installations must not see their files move.
+fn instance_dir(appdata: &Path, id: &InstanceId) -> PathBuf {
+    match id {
+        InstanceId::Default => appdata.join("dsh-desk"),
+        InstanceId::Named(name) => appdata.join("dsh-desk").join("instances").join(name),
+    }
+}
+
+fn config_path_for(id: &InstanceId) -> Option<PathBuf> {
     std::env::var("APPDATA")
         .ok()
-        .map(|appdata| PathBuf::from(appdata).join("dsh-desk").join("dsh-desk.log"))
+        .map(|appdata| instance_dir(Path::new(&appdata), id).join("config.json"))
+}
+
+fn log_path_for(id: &InstanceId) -> Option<PathBuf> {
+    std::env::var("APPDATA")
+        .ok()
+        .map(|appdata| instance_dir(Path::new(&appdata), id).join("dsh-desk.log"))
 }
 
 /// S19: one-shot marker for the "still running in the tray" hint — a plain
 /// file next to the log, deliberately NOT a config.json field (the config
 /// is user-authored; one-shot UI state does not belong in it).
+fn tray_hint_path_for(id: &InstanceId) -> Option<PathBuf> {
+    std::env::var("APPDATA")
+        .ok()
+        .map(|appdata| instance_dir(Path::new(&appdata), id).join("tray-hint.shown"))
+}
+
+fn config_path() -> Option<PathBuf> {
+    config_path_for(&instance())
+}
+
+fn log_path() -> Option<PathBuf> {
+    log_path_for(&instance())
+}
+
 fn tray_hint_path() -> Option<PathBuf> {
-    std::env::var("APPDATA").ok().map(|appdata| {
-        PathBuf::from(appdata)
+    tray_hint_path_for(&instance())
+}
+
+/// Human-visible identity: window title, tray tooltip, and toast title all
+/// carry the instance name for named instances.
+fn display_name() -> String {
+    window_title_for(&instance())
+}
+
+fn window_title_for(id: &InstanceId) -> String {
+    match id {
+        InstanceId::Default => "DSH Desk".into(),
+        InstanceId::Named(name) => format!("DSH Desk — {name}"),
+    }
+}
+
+/// S23: WebView2 user-data directory for named instances. They MUST NOT
+/// share the default profile: every instance's server lives on 127.0.0.1
+/// and cookies are port-agnostic, so a shared cookie store would have the
+/// servers overwrite each other's auth cookie (the cf8f582 401 family).
+/// The default instance stays on tauri's forced profile — an existing
+/// installation keeps working untouched. Named profiles live under
+/// LOCALAPPDATA like the default's (a WebView2 profile is mostly cache and
+/// does not belong in a roaming profile), next to the instance's other
+/// files under a parallel `dsh-desk\instances` root.
+fn webview_data_dir_for(id: &InstanceId) -> Option<PathBuf> {
+    let name = match id {
+        InstanceId::Default => return None,
+        InstanceId::Named(name) => name,
+    };
+    std::env::var("LOCALAPPDATA").ok().map(|local| {
+        Path::new(&local)
             .join("dsh-desk")
-            .join("tray-hint.shown")
+            .join("instances")
+            .join(name)
+            .join("webview")
     })
+}
+
+/// S23: per-instance single-instance guard, replacing
+/// tauri-plugin-single-instance (whose lock identity is only the app
+/// identifier — arg-independent, so two instances of one exe could never
+/// coexist). Same mechanism the plugin used on Windows, keyed by the
+/// instance name: a named mutex claims the instance; a hidden message
+/// window receives a WM_COPYDATA ping from a second launch and shows +
+/// focuses the survivor's window. Non-Windows runs UNGUARDED — a
+/// same-instance double launch is possible there (S11 territory).
+#[cfg(windows)]
+mod instance_guard {
+    use std::sync::atomic::{AtomicIsize, Ordering};
+
+    use super::{log_line, stamp_page_theme, InstanceId};
+    use tauri::{AppHandle, Manager};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HWND};
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+    use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, FindWindowW, RegisterClassW, SendMessageTimeoutW,
+        SMTO_ABORTIFHUNG, WINDOW_STYLE, WM_COPYDATA, WNDCLASSW,
+    };
+
+    // Deliberately NOT read from tauri.conf.json at runtime: the names only
+    // have to be stable and unique per app+instance. Note the `-default`
+    // suffix differs from the retired plugin's plain `<id>-sim` lock, so a
+    // new build does not bounce off an old build still running — a
+    // one-transition upgrade edge, accepted.
+    const IDENTIFIER: &str = "com.whyiyhw.dshdesk";
+    /// dwData tag separating our WM_COPYDATA pings from anyone else's.
+    const WM_COPYDATA_SHOW: usize = 0x0D5E_D5C5;
+    /// How long a second launch waits for the survivor to show its window
+    /// before giving up on the ping (the survivor stays runnable either way).
+    const PING_TIMEOUT_MS: u32 = 3000;
+
+    /// The survivor's AppHandle, published BEFORE the guard window exists,
+    /// so a ping landing in the create/attach gap still finds it (one guard
+    /// window per process — a single static is the whole mapping). Never
+    /// freed: process-lifetime, like the window itself.
+    static SURVIVOR_APP: AtomicIsize = AtomicIsize::new(0);
+
+    fn encode_utf16(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe extern "system" fn wnd_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize {
+        if msg == WM_COPYDATA {
+            let data = &*(lparam as *const COPYDATASTRUCT);
+            if data.dwData == WM_COPYDATA_SHOW {
+                let app = SURVIVOR_APP.load(Ordering::Acquire) as *const AppHandle;
+                if let Some(app) = app.as_ref() {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        // Same escape path as the tray Show / hotkey: the
+                        // focused page may still be the starting page (S17).
+                        stamp_page_theme(&window);
+                        let _ = window.set_focus();
+                    }
+                }
+                // TRUE = handled even when the main window was not built
+                // yet (millisecond setup gap): the second launch must still
+                // never run a duplicate.
+                return 1;
+            }
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    /// Create the hidden window that receives second-launch pings. Never
+    /// destroyed: it dies with the process, exactly when the mutex handle
+    /// does, so a successor can never ping a dead window.
+    unsafe fn create_message_window(class: &[u16], name: &[u16]) {
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(wnd_proc),
+            hInstance: GetModuleHandleW(std::ptr::null()),
+            lpszClassName: class.as_ptr(),
+            ..Default::default()
+        };
+        if RegisterClassW(&wc) == 0 {
+            log_line(
+                "dsh-desk: registering the instance-guard window failed — a same-instance \
+                 relaunch will open a second window instead of focusing this one",
+            );
+            return;
+        }
+        // A plain hidden top-level window (not HWND_MESSAGE): FindWindowW
+        // cannot see message-only windows, and FindWindowW is how the next
+        // launch finds us.
+        let hwnd = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            name.as_ptr(),
+            0 as WINDOW_STYLE,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            GetModuleHandleW(std::ptr::null()),
+            std::ptr::null(),
+        );
+        if hwnd.is_null() {
+            log_line("dsh-desk: creating the instance-guard window failed");
+        }
+    }
+
+    /// Claim this instance, or — if it is already running — ping the
+    /// survivor (it shows and focuses its window) and exit(0). Returns only
+    /// in the surviving process, and must run before any file side effect
+    /// (log rotation, first-run config write): a bounced launch stays
+    /// side-effect free, the position the single-instance plugin's early
+    /// builder init used to occupy.
+    pub fn claim_or_exit(app: &AppHandle, id: &InstanceId) {
+        let label = match id {
+            InstanceId::Default => "default",
+            InstanceId::Named(name) => name,
+        };
+        // Publish before anything else: a ping can arrive the moment the
+        // guard window below exists.
+        let boxed: *const AppHandle = Box::into_raw(Box::new(app.clone()));
+        SURVIVOR_APP.store(boxed as isize, Ordering::Release);
+        let base = format!("{IDENTIFIER}-{label}");
+        let mutex_name = encode_utf16(&format!("{base}-sim"));
+        let class_name = encode_utf16(&format!("{base}-sic"));
+        let window_name = encode_utf16(&format!("{base}-siw"));
+        unsafe {
+            // bInitialOwner = 0: ownership is irrelevant, existence is the
+            // claim. A winning handle is deliberately never closed — the
+            // mutex object lives exactly as long as this process. A NULL
+            // handle means the OS refused the claim: run unguarded rather
+            // than not run, but say so loudly.
+            let mutex = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
+            if mutex.is_null() {
+                log_line(
+                    "dsh-desk: cannot create the instance lock — running WITHOUT \
+                     same-instance protection",
+                );
+                return;
+            }
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let survivor = FindWindowW(class_name.as_ptr(), window_name.as_ptr());
+                if !survivor.is_null() {
+                    // Fixed payload: the only action a second launch of the
+                    // same instance ever needs is "show me". Timeout-bounded
+                    // so a hung or busy survivor cannot wedge this launcher.
+                    let payload = b"show\0";
+                    let data = COPYDATASTRUCT {
+                        dwData: WM_COPYDATA_SHOW,
+                        cbData: payload.len() as u32,
+                        lpData: payload.as_ptr() as *mut core::ffi::c_void,
+                    };
+                    let mut result = 0usize;
+                    let sent = SendMessageTimeoutW(
+                        survivor,
+                        WM_COPYDATA,
+                        0,
+                        &data as *const COPYDATASTRUCT as isize,
+                        SMTO_ABORTIFHUNG,
+                        PING_TIMEOUT_MS,
+                        &mut result,
+                    );
+                    if sent == 0 {
+                        log_line(
+                            "dsh-desk: the running instance did not answer within \
+                             3s — it may be busy; focus it from the tray",
+                        );
+                    }
+                    app.cleanup_before_exit();
+                    std::process::exit(0);
+                }
+                // The mutex exists but nobody answers: the previous owner is
+                // mid-exit (or lost its guard window). Drop our handle and
+                // retry once; if it is STILL taken, refuse rather than run a
+                // second primary of the same instance (which would
+                // double-spawn its server).
+                CloseHandle(mutex);
+                let mutex = CreateMutexW(std::ptr::null(), 0, mutex_name.as_ptr());
+                if mutex.is_null() || GetLastError() == ERROR_ALREADY_EXISTS {
+                    log_line(
+                        "dsh-desk: the instance lock is held but its owner will not answer \
+                         (mid-exit, or its guard window failed to create) — refusing to \
+                         start a duplicate",
+                    );
+                    app.cleanup_before_exit();
+                    std::process::exit(2);
+                }
+                create_message_window(&class_name, &window_name);
+                return;
+            }
+            create_message_window(&class_name, &window_name);
+        }
+    }
 }
 
 /// S13: past this size the mirrored log rotates at startup (one `.old`
@@ -621,7 +957,7 @@ fn show_toast(app: &AppHandle, body: &str) {
     if let Err(error) = app
         .notification()
         .builder()
-        .title("DSH Desk")
+        .title(display_name())
         .body(body)
         .show()
     {
@@ -1110,9 +1446,9 @@ fn set_tray_status(app: &AppHandle, running: bool) {
         }
     });
     let tooltip = if running {
-        "DSH Desk — ready"
+        format!("{} — ready", display_name())
     } else {
-        "DSH Desk — not ready"
+        format!("{} — not ready", display_name())
     };
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
@@ -1601,34 +1937,50 @@ fn install_panic_hook() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // S23: settle the instance identity before anything derives a path from
+    // it (config/log/marker paths, window-state file, WebView2 profile,
+    // instance-guard names — and the panic hook below, which logs to the
+    // instance's own file). An unusable --instance value cannot show a
+    // window yet, so the default instance's log plus stderr is the whole
+    // diagnosis surface for it.
+    let argv: Vec<String> = std::env::args_os()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    match parse_instance_arg(&argv) {
+        Ok(id) => {
+            INSTANCE.set(id).ok();
+        }
+        Err(error) => {
+            eprintln!("dsh-desk: {error}");
+            log_line(&format!("dsh-desk: {error} — exiting (code 2)"));
+            std::process::exit(2);
+        }
+    }
     // S13: route panics to the log early — even a panic during plugin init
     // should leave a trace.
     install_panic_hook();
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                // Same escape path as the tray Show / hotkey: the focused
-                // page may still be the starting page (S17).
-                stamp_page_theme(&window);
-                let _ = window.set_focus();
-            }
-        }))
-        .plugin(
+        .plugin({
             // S9: remember size/position across launches. VISIBLE is
             // deliberately excluded — the plugin's restore would show and
             // focus the window at boot — and so is MAXIMIZED: restoring it
             // calls maximize() on the still-hidden window, and Win32
             // SW_MAXIMIZE shows and activates it, breaking the hidden-start
             // contract (the window appears only when the readiness line
-            // arrives) through another door.
-            tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    tauri_plugin_window_state::StateFlags::SIZE
-                        | tauri_plugin_window_state::StateFlags::POSITION,
-                )
-                .build(),
-        )
+            // arrives) through another door. S23: a named instance keeps its
+            // geometry in its own file so coexisting instances cannot
+            // clobber each other's size/position.
+            let builder = tauri_plugin_window_state::Builder::default().with_state_flags(
+                tauri_plugin_window_state::StateFlags::SIZE
+                    | tauri_plugin_window_state::StateFlags::POSITION,
+            );
+            match instance() {
+                InstanceId::Default => builder.build(),
+                InstanceId::Named(name) => builder
+                    .with_filename(format!(".window-state.{name}.json"))
+                    .build(),
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -1653,13 +2005,22 @@ pub fn run() {
             window_hide
         ])
         .setup(|app| {
+            // S23: claim THIS instance before any file side effect. A
+            // second launch of the same instance pings the survivor (show +
+            // focus) and exits right here — before rotation or a first-run
+            // config write could touch the running instance's files. This
+            // is the position the single-instance plugin's builder init
+            // used to occupy (that plugin is gone: its lock identity is
+            // arg-independent, so named instances could never coexist).
+            #[cfg(windows)]
+            instance_guard::claim_or_exit(app.handle(), &instance());
             // S13: bound the mirror log first. This runs only in the
-            // surviving instance — a second launch exits inside
-            // single-instance init and must not rotate the live instance's
-            // log. Then the banner: build, binary, and the configured launch
-            // command — the gate paths below return before any "started"
-            // line, so the banner is the one place the command line is
-            // guaranteed to land.
+            // surviving instance — a bounced second launch exited in the
+            // guard above and must not rotate the live instance's log. Then
+            // the banner: build, binary, and the configured launch command
+            // — the gate paths below return before any "started" line, so
+            // the banner is the one place the command line is guaranteed to
+            // land.
             if let Some(path) = log_path() {
                 rotate_log_if_large(&path, LOG_ROTATE_BYTES);
             }
@@ -1673,6 +2034,26 @@ pub fn run() {
                 config.command,
                 config.args.join(" ")
             ));
+            if let InstanceId::Named(name) = instance() {
+                log_line(&format!("dsh-desk: instance \"{name}\""));
+            }
+            // ── window ───────────────────────────────────────────────────────
+            // S23: created in code (was tauri.conf.json) so a named instance
+            // can point its WebView2 profile at the instance directory — a
+            // config window cannot parameterize data_directory. Same shape
+            // as before: 1440x920, hidden until the readiness line,
+            // accept-first-mouse; the window-state plugin still restores
+            // size/position through its on_window_ready hook.
+            let mut window =
+                tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                    .title(window_title_for(&instance()))
+                    .inner_size(1440.0, 920.0)
+                    .visible(false)
+                    .accept_first_mouse(true);
+            if let Some(dir) = webview_data_dir_for(&instance()) {
+                window = window.data_directory(dir);
+            }
+            window.build()?;
             // ── tray ─────────────────────────────────────────────────────────
             let show = MenuItem::with_id(app, "show", "Show window", true, None::<&str>)?;
             let open_browser =
@@ -1703,7 +2084,7 @@ pub fn run() {
                 // S7: boot starts in the not-ready (gray) face — the colored
                 // mark arrives with the first readiness line (open_gui).
                 .icon(app.default_window_icon().map(gray_image).unwrap())
-                .tooltip("DSH Desk — not ready")
+                .tooltip(format!("{} — not ready", display_name()))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -1754,8 +2135,22 @@ pub fn run() {
                 })
                 .build(app)?;
             // ── global hotkey: Alt+Shift+D toggles the window ────────────────
+            // S23: the hotkey belongs to the DEFAULT instance only — named
+            // instances must neither fight it nor steal it by boot order.
+            // A registration failure (hotkey already owned by another app)
+            // degrades to a log line: an otherwise-fine launch must not die
+            // here, which the old `?` propagation would have caused.
             let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyD);
-            app.global_shortcut().register(shortcut)?;
+            if matches!(instance(), InstanceId::Default) {
+                if let Err(error) = app.global_shortcut().register(shortcut) {
+                    log_line(&format!(
+                        "dsh-desk: Alt+Shift+D is unavailable ({error}) — continuing without \
+                         the hotkey"
+                    ));
+                }
+            } else {
+                log_line("dsh-desk: hotkey not registered (non-default instance)");
+            }
             // ── S21: seamless caption ────────────────────────────────────────
             // Layer A always (harmless once B removes the caption), B
             // probes on the webview thread while the window is still
@@ -2135,5 +2530,104 @@ mod tests {
         // The strip is caption-only chrome: one fixed, transparent div.
         assert!(js.contains("app-region:drag"));
         assert!(js.contains("position:fixed;top:0;left:0;right:0"));
+    }
+
+    // ── S23: multi-instance ─────────────────────────────────────────────
+
+    fn argv(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn instance_names_validate_charset_and_length() {
+        assert!(valid_instance_name("work"));
+        assert!(valid_instance_name("a-b_2"));
+        assert!(valid_instance_name("x"));
+        assert!(valid_instance_name(&"a".repeat(32)));
+        // names become directory/mutex identifiers — keep them conservative
+        assert!(!valid_instance_name(""));
+        assert!(!valid_instance_name("default")); // reserved: no-flag identity
+        assert!(!valid_instance_name(&"a".repeat(33)));
+        assert!(!valid_instance_name("a b"));
+        assert!(!valid_instance_name("a/b"));
+        assert!(!valid_instance_name(".."));
+        assert!(!valid_instance_name("-work")); // must start alphanumeric
+        assert!(!valid_instance_name("--flag")); // a stray flag is not a name
+        assert!(!valid_instance_name("实例"));
+    }
+
+    #[test]
+    fn instance_arg_parses_both_flag_forms_and_refuses_garbage() {
+        assert_eq!(
+            parse_instance_arg(&argv(&["dsh-desk"])),
+            Ok(InstanceId::Default)
+        );
+        assert_eq!(
+            parse_instance_arg(&argv(&["dsh-desk", "--instance", "work"])),
+            Ok(InstanceId::Named("work".into()))
+        );
+        assert_eq!(
+            parse_instance_arg(&argv(&["dsh-desk", "--instance=lab"])),
+            Ok(InstanceId::Named("lab".into()))
+        );
+        assert_eq!(
+            parse_instance_arg(&argv(&["dsh-desk", "--other", "--instance", "x"])),
+            Ok(InstanceId::Named("x".into()))
+        );
+        assert!(parse_instance_arg(&argv(&["dsh-desk", "--instance"])).is_err());
+        assert!(parse_instance_arg(&argv(&["dsh-desk", "--instance", "a/b"])).is_err());
+        assert!(parse_instance_arg(&argv(&["dsh-desk", "--instance="])).is_err());
+    }
+
+    #[test]
+    fn instance_paths_split_default_and_named() {
+        let appdata = Path::new(r"C:\Users\t\AppData\Roaming");
+        // the default instance keeps the historical flat layout — an
+        // existing installation must not see its files move
+        assert_eq!(
+            instance_dir(appdata, &InstanceId::Default),
+            PathBuf::from(r"C:\Users\t\AppData\Roaming\dsh-desk")
+        );
+        // a named instance gets its own directory: config, log, and tray
+        // hint all live under it, so coexisting instances never write into
+        // each other's files
+        let named = instance_dir(appdata, &InstanceId::Named("work".into()));
+        assert_eq!(
+            named,
+            PathBuf::from(r"C:\Users\t\AppData\Roaming\dsh-desk\instances\work")
+        );
+        for file in ["config.json", "dsh-desk.log", "tray-hint.shown"] {
+            assert_eq!(
+                named.join(file).parent(),
+                Some(named.as_path()),
+                "{file} must live inside the instance directory"
+            );
+        }
+    }
+
+    #[test]
+    fn named_instances_title_and_profile_their_own_identity() {
+        assert_eq!(window_title_for(&InstanceId::Default), "DSH Desk");
+        assert_eq!(
+            window_title_for(&InstanceId::Named("work".into())),
+            "DSH Desk — work"
+        );
+        // the default instance must NOT redirect its WebView2 profile (an
+        // existing installation keeps its cookies); a named one must have
+        // its own (cookies are port-agnostic — a shared store lets
+        // 127.0.0.1 servers overwrite each other's auth cookie)
+        assert!(webview_data_dir_for(&InstanceId::Default).is_none());
+        assert!(webview_data_dir_for(&InstanceId::Named("work".into())).is_some());
+    }
+
+    #[test]
+    fn default_config_pins_an_ephemeral_port() {
+        let config = DeskConfig::default();
+        let port = config
+            .args
+            .iter()
+            .position(|arg| arg == "--port")
+            .expect("the default config launches with --port");
+        assert_eq!(config.args[port + 1], "0");
     }
 }

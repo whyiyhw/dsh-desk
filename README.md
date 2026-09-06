@@ -40,12 +40,12 @@ pnpm tauri dev
 
 On first run a default config is written to `%APPDATA%\dsh-desk\config.json` (Windows) — edit it to match your dsh installation.
 
-With an installed `dsh` on PATH:
+With an installed `dsh` on PATH (first runs now also write `"--port", "0"` — see [Multiple instances](#multiple-instances); the shell always follows the URL the server prints, so a drifting port costs nothing):
 
 ```json
 {
   "command": "dsh",
-  "args": ["--profile", "web", "--no-open"]
+  "args": ["--profile", "web", "--no-open", "--port", "0"]
 }
 ```
 
@@ -62,6 +62,29 @@ From a source checkout (launch node directly — pnpm's script layer mangles for
 - `command` / `args`: how to launch dsh. `--no-open` keeps the default browser from popping up (the window is the browser). `--port 0` lets the OS pick a free port — the shell navigates to whatever URL dsh prints, so the port drifting between launches is fine; drop it only if you know the default port is free.
 - `cwd`: optional working directory (a source checkout root).
 - The dsh stdout/stderr mirror to `%APPDATA%\dsh-desk\dsh-desk.log`.
+
+## Multiple instances
+
+Run more than one dsh side by side — one window, tray icon, config, log, and server per instance:
+
+```powershell
+dsh-desk.exe                     # the default instance (no flag, unchanged)
+dsh-desk.exe --instance work     # a second, fully independent instance
+dsh-desk.exe --instance lab
+```
+
+Each named instance keeps its state in its own directories:
+
+- config / log: `%APPDATA%\dsh-desk\instances\<name>\`
+- WebView2 profile (cookies, cache): `%LOCALAPPDATA%\dsh-desk\instances\<name>\webview` — profiles are deliberately per-instance: every instance's server lives on `127.0.0.1` and cookies ignore ports, so a shared profile would have the servers overwrite each other's login. Budget ~20–40 MB of disk per instance.
+
+Notes:
+
+- **Relaunching the same instance** just shows and focuses its window (no duplicate). Different instances coexist freely.
+- **The global hotkey `Alt+Shift+D` belongs to the default instance only.** Named instances never fight over it — bring their windows up from the tray.
+- **First-run configs include `--port 0`** (OS-assigned free port) so instances never collide on dsh's default port. Existing config files are never rewritten; two instances pinned to the same explicit port will collide there.
+- Name rules: 1–32 chars of `A-Z a-z 0-9 - _`, starting with an alphanumeric; `default` is reserved.
+- One shared surface remains by design: the tray's *Open in browser* opens the authenticated URL in your **browser**, whose 127.0.0.1 cookie is shared across instances — the app windows are isolated, browser sessions are not.
 
 ## Support
 

@@ -89,6 +89,19 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - 并行会话提醒再现:README 在本会话中途被另一会话更新(SmartScreen FAQ),Edit 前重读的规矩再+1。
 
 
+### S22/S23 多实例与控制台窗（2026-09-06 交付沉淀，s22-s23 分支）
+
+> 验证记录 [docs/verification-2026-09-06-S22.md](docs/verification-2026-09-06-S22.md) / [docs/verification-2026-09-06-S23.md](docs/verification-2026-09-06-S23.md)。Phase B（默认实例 §2.4 全量走查）机器空闲后补，未过不并 main。
+
+- **tauri-plugin-single-instance 2.4.4 锁名只认 app identifier（vendored 源码实证），与 CLI 参数无关**——多实例必须弃用插件自研分锁（mutex `{identifier}-{instance}-sim` + 隐藏窗 `-sic/-siw` + WM_COPYDATA）。注意新锁名与旧插件锁名不同（`-default-` 后缀）：新旧构建并存的一次性升级边缘，互不弹回，已接受。老脚本按类名 `com.whyiyhw.dshdesk-sic` 找守卫窗的，改找 `com.whyiyhw.dshdesk-default-sic`。
+- **cookie 不分端口是跨实例互踩的根源**：多个 dsh 服务都在 127.0.0.1，共享一个 WebView2 cookie 库必互相覆盖认证 cookie（cf8f582 修的 401 同族）——多窗口产品形态必须每实例独立 WebView2 剖面（命名实例 `LOCALAPPDATA\dsh-desk\instances\<name>\webview`；缓存也别放 ROAMING）。**浏览器侧例外是设计**：Open in browser 共享浏览器 cookie 库，文档已注明。
+- **tao 的 visible 状态与外部 ShowWindow 脱钩**：外部 SW_HIDE 藏窗后调 `window.show()` 同值短路成 no-op（旧插件回调同样性质）——测"弹回唤醒"必须走产品藏窗路径（PostMessage WM_CLOSE → CloseRequested → hide()），别用外部藏窗测。
+- **CopyFromScreen 是屏幕区域不是窗口**：覆盖窗（Umi-OCR 主窗）在目标位会截到别人的内容；SetForegroundWindow 从后台进程偷焦点会被 Windows 拒——先最小化覆盖窗。**PS1 无 BOM 时 em dash（U+2014）按 ANSI 读成乱码**（BOM 规则再+1 实例）：脚本里写 `[char]0x2014`，别写字面量。
+- **窗口从 tauri.conf.json 挪到代码创建后**：window-state 插件经 `on_window_ready` 钩子照常恢复几何（对任何创建路径生效，vendored 源码核实）；`.data_directory()` 是唯一能按实例定向 WebView2 剖面的口子（tauri 在 Windows 强制设剖面但尊重显式指定）。
+- **守卫投递用 `SendMessageTimeoutW(SMTO_ABORTIFHUNG, 3s)`** 不用裸 SendMessageW：幸存者主线程在 Quit 杀树期间不泵消息，裸投递会把二次启动无限卡死。
+- **本批次两轮独立审查都抓到真问题**（S22 的 dev 控制台语义、S23 的 `--instance default` 同锁不同目录 P1）——"无作者上下文审查"门禁继续值回成本。
+- **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。
+
 ### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
 
 > 完整复盘见 [docs/postmortem-2026-09-05-host-hyperv-broken.md](docs/postmortem-2026-09-05-host-hyperv-broken.md)。一句话：**本机 Hyper-V 载荷停留在 2020 版**（vmms/vmcompute 19041.320、vmbus.sys RTM .1、vmbusroot.sys 缺失，内核 .6456）——任何 guest 活不过 90 秒（Gen1 冻结、Gen2 Worker 18508 自关机）、心跳永不连，Docker Desktop 的 VM 自 09-01 起报同款 33101；DISM/SFC 报健康、功能禁用重启用重展开同版旧货、重启无效。**Phase 2 虚机门禁已按用户决策放弃执行**，想跑 VM 相关验证先修宿主（就地修复升级）或换机。
