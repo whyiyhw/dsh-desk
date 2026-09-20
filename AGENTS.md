@@ -37,6 +37,12 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - `%APPDATA%\dsh-desk\config.json` 的 args 已加 `"--port", "0"`（OS 挑空闲端口）。壳只认 stdout 里打印的实际 URL，端口漂移无影响。
 - 看到 EADDRINUSE 不是 bug，是没加这个参数（或被改回去）。
 
+### harness checkout git pull 后必须 `pnpm build`（2026-09-20 实锤）
+
+- 症状链：壳日志 `the dsh server (pid X) exited before printing its URL` + stdout 刷一大屏插件 `failed to import`（sidebar/office-to-pdf 等几十个 `required:false` 可选插件——**全是误导性表象**）。真错误在 `~/.dsh/logs/startup-*.log` 开头：`typert-loader: ... importing D:\...\packages\...\lib\typert.host.js failed: Cannot find module`。
+- 根因：checkout 被 git pull 更新后 `packages/*/lib/` 构建产物还是旧版（lib/ 是 gitignored 的编译输出，tsconfig.tsbuildinfo 在但产物缺新文件）。`pnpm install` 报 "Already up to date" **不代表构建就绪**——install 只管依赖，不管产物。checkout 根目录跑 `pnpm build`（约 5 分钟）即愈。
+- 已在跑的旧实例不受影响（tsx 启动时已把模块载入内存），所以「老实例正常、新实例全灭」是这个坑的指纹。无头复现定位（`node --import tsx/esm apps/cli/src/bin.ts --profile web --no-open --port 0` 直接跑）与壳无关时先查这里。
+
 ### 沙箱与执行方式
 
 - `pnpm tauri dev` 会启动真实 GUI（WebView2 要建 IPC 通道、要 spawn 子进程）。在 DSH 的 workspace-write 沙箱下 WebView2 初始化直接崩（`platform_channel.cc: Access is denied`），**必须以完整权限运行**。
