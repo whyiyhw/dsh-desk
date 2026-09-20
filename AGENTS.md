@@ -42,6 +42,7 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - 症状链：壳日志 `the dsh server (pid X) exited before printing its URL` + stdout 刷一大屏插件 `failed to import`（sidebar/office-to-pdf 等几十个 `required:false` 可选插件——**全是误导性表象**）。真错误在 `~/.dsh/logs/startup-*.log` 开头：`typert-loader: ... importing D:\...\packages\...\lib\typert.host.js failed: Cannot find module`。
 - 根因：checkout 被 git pull 更新后 `packages/*/lib/` 构建产物还是旧版（lib/ 是 gitignored 的编译输出，tsconfig.tsbuildinfo 在但产物缺新文件）。`pnpm install` 报 "Already up to date" **不代表构建就绪**——install 只管依赖，不管产物。checkout 根目录跑 `pnpm build`（约 5 分钟）即愈。
 - 已在跑的旧实例不受影响（tsx 启动时已把模块载入内存），所以「老实例正常、新实例全灭」是这个坑的指纹。无头复现定位（`node --import tsx/esm apps/cli/src/bin.ts --profile web --no-open --port 0` 直接跑）与壳无关时先查这里。
+- **同日第二坑（profile 级本地插件）**：harness 0.1.6-alpha.2 重构了 client 插件契约（新 boot/模块系统 `__DSH_BOOT__` + ClientModuleSystem、slots API、typert），旧本地插件（如 dsh-zcode-usage 0.1.0，9月4日构建）web 激活失败时**整个 GUI 被启动兜底横幅卡死**（"Failed to load plugins"），且激活错误**不走 console**（进 cordis logger，浏览器侧抓不到）。解锁 = 从 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles` 暂时移除该插件（保存即热生效，无需重启服务器）；正式修复 = 把插件移植到新契约（未做，待办）。诊断链沉淀：`window.__DSH_BOOT__.entries` 是清单真源（id/url/rev/inject）；单条目 URL `/plugins/??<pkg>/client.js&rev=<rev>` 可 curl（**旧 rev 重建后 404 是失效机制，不是故障**）；curl `-o /dev/null` 报写错误时 `-w` 的 http_code 不可信（曾把 404 读成 200）。
 
 ### 沙箱与执行方式
 
