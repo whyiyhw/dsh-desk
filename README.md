@@ -23,7 +23,7 @@ Windows 10 or newer.
 
 **Machines with no WebView2 runtime and no internet during install** (rare): the installer embeds the small bootstrapper (+~2 MB), but installing the runtime itself still needs internet. On such a machine, first install Microsoft's standalone x64 WebView2 runtime ([go.microsoft.com/fwlink/?linkid=2124701](https://go.microsoft.com/fwlink/?linkid=2124701)) from a connected machine, then run the dsh-desk installer.
 
-**Updates**: the tray's *Check for updates* compares your version against the newest GitHub release and opens the Releases page when a newer one exists. dsh-desk never updates itself in place. Every outcome — newer release, up to date, or a failed check — also shows a toast, so the click never goes unanswered.
+**Updates**: the tray's *Check for updates* compares your version against the newest GitHub release. When a newer one exists you get a confirm dialog — *Download and install* downloads a **signature-verified** installer (minisign key embedded in the app; the signature is checked before anything runs), installs it passively, and relaunches the app with your settings and `--instance` arguments intact; *Not now* skips it. The server is stopped cleanly before the swap, and any failure of the in-app path falls back to opening the Releases page for a manual install. Every outcome also shows a toast, so the click never goes unanswered. Pre-releases never auto-install (the signed manifest rides the `latest` release channel); they are offered via the Releases page instead.
 
 ## Install (from source)
 

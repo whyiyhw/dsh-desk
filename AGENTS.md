@@ -109,7 +109,19 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **本批次两轮独立审查都抓到真问题**（S22 的 dev 控制台语义、S23 的 `--instance default` 同锁不同目录 P1）——"无作者上下文审查"门禁继续值回成本。
 - **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。S21 最终以 c0f41c1 落盘（2026-09-21），当日补真机验证并修复 P0 后随 v0.3.1 落地（见下节）。
 
-### S21 无边框与 v0.3.0→v0.3.1（2026-09-21 真机验证沉淀）
+### S24 应用内签名更新器（2026-09-21 交付沉淀，v0.3.2）
+
+> 验证记录 [docs/verification-2026-09-21-S24.md](docs/verification/verification-2026-09-21-S24.md)。
+
+- **更新器密钥三件套在 `C:\Users\Administrator\.tauri\dsh-desk\`**（私钥/公钥/口令，不入仓库；CI secrets 同步）。**私钥或口令丢失 = 所有已发布客户端永远无法再自动更新**——换机/清盘前先备份这三件。首对密钥作废原因：MSYS 的 `openssl rand -base64` 输出带 `\r`（命令替换只剥 `\n`），口令尾巴藏 `\r` 导致"Wrong password"且两变体都对不上；**Windows 下生成口令用 `head -c 32 /dev/urandom | base64 | tr -d '\r\n=+/'`**。
+- **被打断的构建会留 0 字节 exe，且 cargo 指纹会跳过重链**（"输出比依赖新"判定被截断产物骗过）→ NSIS 忠实打包 0 字节、signer 忠实签名、updater 忠实安装——**每一环都"正确"，坏的是输入**，表现为"更新装完应用消失、重装也装出 0 字节"。中断构建后一律 `rm target/release/dsh-desk.exe deps/dsh_desk*.exe` 强制重链，**产物体积是第一体检指标**（本仓库 NSIS 包正常 ~5.1MB，exe ~13.9MB）。
+- **坏安装器的注册表 InstallLocation 会劫持后续安装的默认路径**：装不进 `%LOCALAPPDATA%\dsh-desk` 时先查 `HKCU:\...\Uninstall\dsh-desk` 的 InstallLocation（探针目录 `/D=` 会注册自己！）——清键或显式 `/D=` 解决。
+- **更新器验证的本地端点配方**：测试构建两处补丁（updater 端点 + RELEASES_API_URL 指本地 HTTP 服务，另加 `dangerousInsecureTransportProtocol: true`——插件默认拒绝 http 端点）+ 本地 `python -m http.server` 供 latest.json/假 releases API/新版本签名包；**触发更新检查用环境变量钩子**（测试构建专属，`DSH_DESK_UPDATE_CHECK`），别跟托盘菜单自动化较劲——溢出浮层在用户在场时拒开（本次 Win+B+Enter 和物理点击双失败，S7 教训重现）。
+- **updater 的 Windows 安装路径 `std::process::exit(0)` 旁路 RunEvent**：ExitRequested 里的清理（杀 server、窗口几何保存）都不会跑，必须塞进 `on_before_exit`（同步杀树：exiting 置位→lifecycle 锁→kill_registered_child，与 Quit 路径同纪律）。NSIS `/R` 重启**继承环境变量**（验证钩子会二次触发——正好顺带验了"无更新"路径）；`--instance` 参数经 current_exe_args 透传存活。
+- **`tauri-plugin-window-state` 的 `WindowExt for WebviewWindow` 在本树上解析失败**（E0599），`AppHandleExt::save_window_state`（保存全部窗口）可用——拿 AppHandle 调。
+- **`blocking_show` 必须在非主线程**（对话框插件硬约束），我们的检查线程天然满足；原生对话框不受 Focus Assist 抑制（toast 会）——需要用户必达的确认走对话框不走 toast。
+
+
 
 > 验证记录 [docs/verification-2026-09-21-S21.md](docs/verification/verification-2026-09-21-S21.md)。
 
@@ -120,6 +132,10 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **DPI unaware 脚本的 SetCursorPos 会把窗口几何也一并污染**（不只点击落空）：虚拟化坐标下的"拖拽"会把真窗口拖去乱七八糟的位置且 window-state 插件照单全收——测试前 `SetProcessDPIAware()`，已被污染的 `.window-state.json` 直接删。
 - **判定"面板期点击落在哪页"要留档**：启动面板只活 2-3 秒（热启动更短），点击测试要么抓帧截图同步留证、要么把 config 临时指向缺失命令让错误面板常驻（测完恢复备份）。
 - **CI 触发语义**：`on: push: tags-ignore` 不写 `branches` = 只在**非 v 开头的 tag**上触发、分支推送完全不触发（check.yml 因此死了 16 天没人发现）——分支推送要触发必须显式写 `branches`。`gh run watch` 偶发非零退出（API 抖动），非零 ≠ run 失败，以 `gh run view` 为准。
+
+### S21 无边框与 v0.3.0→v0.3.1（2026-09-21 真机验证沉淀）
+
+> 验证记录 [docs/verification-2026-09-21-S21.md](docs/verification/verification-2026-09-21-S21.md)。
 
 ### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
 

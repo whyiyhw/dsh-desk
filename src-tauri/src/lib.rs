@@ -50,6 +50,9 @@ use tauri::{
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
+// S24: dialog for the update confirm; updater for the signed install path.
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
+use tauri_plugin_updater::UpdaterExt;
 
 /// The running `dsh` server child, if any. Killing must go through
 /// [`kill_registered_child`] so the whole process tree dies with it.
@@ -1728,14 +1731,16 @@ fn run_update_check(app: &AppHandle) {
     match tag_is_newer(tag, &current) {
         Some(true) => {
             log_line(&format!(
-                "dsh-desk: release {tag} is newer than this build ({current}) \
-                 — opening the releases page"
+                "dsh-desk: release {tag} is newer than this build ({current}) — trying the \
+                 signed in-app update first"
             ));
-            show_toast(
-                app,
-                &format!("Release {tag} is out — opening the releases page."),
-            );
-            open_external(app, page, "releases page");
+            if !try_signed_update(app, page) {
+                show_toast(
+                    app,
+                    &format!("Release {tag} is out — opening the releases page."),
+                );
+                open_external(app, page, "releases page");
+            }
         }
         Some(false) => {
             log_line(&format!(
@@ -1758,6 +1763,144 @@ fn run_update_check(app: &AppHandle) {
                      — treating it as no update."
                 ),
             );
+        }
+    }
+}
+
+/// S24: the signed in-app update — Q2 cashed in. The HTTP check above stays
+/// the DETECTION layer (it also sees prereleases and releases older than the
+/// first signed manifest); this is the INSTALL layer: fetch the signed
+/// manifest, confirm with a dialog, download with signature verification,
+/// then run the passive installer which relaunches the app with the current
+/// arguments (an `--instance` name survives the update). Returns `true` when
+/// the outcome was fully handled in-app — declined, installed (the process
+/// exits inside `download_and_install`), or failed-after-confirm (recovered
+/// in place; the releases page is opened here, once). `false` falls the
+/// caller back to opening the releases page: no manifest at the endpoint (a
+/// prerelease, or a release from before latest.json existed), or an updater
+/// failure before the user confirmed anything.
+fn try_signed_update(app: &AppHandle, page: &str) -> bool {
+    let handle = app.clone();
+    let updater = match app
+        .updater_builder()
+        // The S5a contract: a tray click must land in ~5s. This timeout
+        // bounds the manifest fetch (and, sharing the client, the artifact
+        // download — generous for a ~5MB installer on a slow link) so a
+        // stalled connection cannot pin the check thread and
+        // UPDATE_CHECK_IN_FLIGHT forever (review P2).
+        .timeout(Duration::from_secs(60))
+        // The installer path exits via std::process::exit(0) — RunEvent's
+        // ExitRequested (where the server normally dies) never fires, so the
+        // tree must be killed HERE, synchronously, before the NSIS shell
+        // starts replacing files. Same locking discipline as the exit path:
+        // exiting flag first, lifecycle lock held across the kill (S2's
+        // "no orphaned dsh/node children on any exit path" invariant). The
+        // exit also skips the window-state plugin's own save — do it here so
+        // the relaunched app restores this session's geometry (review P3).
+        .on_before_exit(move || {
+            let state = handle.state::<ServerState>();
+            state.exiting.store(true, Ordering::SeqCst);
+            {
+                let _guard = state.lifecycle.lock().unwrap();
+                kill_registered_child(&state);
+            }
+            use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+            if let Err(error) = handle.save_window_state(StateFlags::SIZE | StateFlags::POSITION) {
+                log_line(&format!(
+                    "dsh-desk: saving window state before the update failed ({error})"
+                ));
+            }
+            log_line("dsh-desk: server stopped for the update install");
+        })
+        .build()
+    {
+        Ok(updater) => updater,
+        Err(error) => {
+            log_line(&format!(
+                "dsh-desk: updater unavailable ({error}) — falling back to the releases page"
+            ));
+            return false;
+        }
+    };
+    let update = match tauri::async_runtime::block_on(updater.check()) {
+        Ok(Some(update)) => update,
+        Ok(None) => {
+            log_line(
+                "dsh-desk: no signed update at the endpoint (a prerelease, or older than the \
+                 first manifest) — falling back to the releases page",
+            );
+            return false;
+        }
+        Err(error) => {
+            log_line(&format!(
+                "dsh-desk: signed update check failed ({error}) — falling back to the \
+                 releases page"
+            ));
+            return false;
+        }
+    };
+    // blocking_show must not run on the main thread — this whole flow is on
+    // the check's spawned thread (see check_for_updates).
+    let confirmed = app
+        .dialog()
+        .message(format!(
+            "dsh-desk {} is available.\n\nDownload and install it now? The app will restart.",
+            update.version
+        ))
+        .title("dsh-desk update")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Download and install".into(),
+            "Not now".into(),
+        ))
+        .blocking_show();
+    if !confirmed {
+        log_line("dsh-desk: update declined in the confirm dialog");
+        return true;
+    }
+    log_line(&format!(
+        "dsh-desk: downloading the signed update to {}...",
+        update.version
+    ));
+    let mut downloaded: u64 = 0;
+    let mut last_bucket: u64 = 0;
+    let result = tauri::async_runtime::block_on(update.download_and_install(
+        |chunk, total| {
+            downloaded += chunk as u64;
+            if let Some(total) = total.filter(|total| *total > 0) {
+                let bucket = downloaded * 10 / total;
+                if bucket > last_bucket {
+                    last_bucket = bucket;
+                    log_line(&format!("dsh-desk: update download at {}0%...", bucket));
+                }
+            }
+        },
+        || log_line("dsh-desk: update downloaded and verified — installing (the app restarts)"),
+    ));
+    match result {
+        // Unreachable in practice: install exits the process on Windows.
+        Ok(()) => true,
+        Err(error) => {
+            log_line(&format!("dsh-desk: signed update install failed ({error})"));
+            // The failure may have happened AFTER on_before_exit already
+            // killed the server and set the exiting flag — in that state
+            // Restart/Retry are silent no-ops (the is_exiting gate), leaving
+            // a zombie shell with a dead GUI (review P1). Recover: clear the
+            // flag and boot a fresh server so the app stays actionable.
+            let state = app.state::<ServerState>();
+            if state.exiting.load(Ordering::SeqCst) {
+                state.exiting.store(false, Ordering::SeqCst);
+                log_line("dsh-desk: install failed after the server stop — restarting the server");
+                restart_server(app);
+            }
+            // Fully handled here (one toast, one page) — returning true
+            // keeps the caller from stacking a second toast (review P3).
+            show_toast(
+                app,
+                "The in-app update failed — opening the releases page for a manual install. \
+                 Details are in the log.",
+            );
+            open_external(app, page, "releases page");
+            true
         }
     }
 }
@@ -2009,6 +2152,12 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_notification::init())
+        // S24: the signed in-app updater (Q2 decision cashed in) and the
+        // dialog plugin for its confirm prompt. The endpoints + embedded
+        // pubkey live in tauri.conf.json; downloads are signature-verified
+        // against that key before anything is executed.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .manage(ServerState::new())
         .invoke_handler(tauri::generate_handler![
             open_log_file,

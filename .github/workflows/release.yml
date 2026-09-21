@@ -38,7 +38,21 @@ jobs:
         shell: bash
         run: node scripts/check-versions.mjs "$TAG_NAME"
       - run: pnpm install --frozen-lockfile
+      # S24: tags build the updater artifacts (bundle.createUpdaterArtifacts
+      # is on; the .sig files land next to the installers) and sign them with
+      # the repo secret set at the Q2 decision — losing that key strands
+      # every shipped client on its embedded pubkey, see AGENTS.md. PR builds
+      # (including forks, which never see repo secrets) disable the updater
+      # artifacts instead: the CLI hard-errors on createUpdaterArtifacts
+      # without a private key, which would turn every fork PR red (review
+      # finding).
       - run: pnpm tauri build
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      - run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload installers
         uses: actions/upload-artifact@v7
         with:
@@ -46,6 +60,7 @@ jobs:
           if-no-files-found: error
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
             src-tauri/target/release/bundle/msi/*.msi
 
   # Separate job so the write token exists only where it is used: PR builds
@@ -78,6 +93,34 @@ jobs:
             find . -type f \( -name '*.exe' -o -name '*.msi' \) -print0 | sort -z | xargs -0 sha256sum | sed 's|\./||'
             echo 'HASHES_EOF'
           } >> "$GITHUB_OUTPUT"
+      # S24: the updater manifest the in-app updater fetches (endpoints in
+      # tauri.conf.json point at releases/latest/download/latest.json —
+      # GitHub's "latest" excludes prereleases, so a prerelease never
+      # auto-installs, by design). NSIS is the artifact the updater runs.
+      - name: Build updater manifest
+        working-directory: bundle
+        shell: bash
+        run: |
+          node -e '
+            const fs = require("fs");
+            const tag = process.env.GITHUB_REF_NAME;
+            const version = tag.replace(/^v/, "");
+            const signature = fs.readFileSync(
+              `nsis/dsh-desk_${version}_x64-setup.exe.sig`, "utf8").trim();
+            const manifest = {
+              version,
+              notes: `https://github.com/whyiyhw/dsh-desk/releases/tag/${tag}`,
+              pub_date: new Date().toISOString(),
+              platforms: {
+                "windows-x86_64": {
+                  signature,
+                  url: `https://github.com/whyiyhw/dsh-desk/releases/download/${tag}/dsh-desk_${version}_x64-setup.exe`,
+                },
+              },
+            };
+            fs.writeFileSync("latest.json", JSON.stringify(manifest, null, 2) + "\n");
+          '
+          cat latest.json
       - uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.hash.outputs.body }}
@@ -85,3 +128,4 @@ jobs:
           files: |
             bundle/nsis/*.exe
             bundle/msi/*.msi
+            bundle/latest.json
