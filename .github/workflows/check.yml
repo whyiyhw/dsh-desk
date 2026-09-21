@@ -4,6 +4,12 @@ name: cargo check
 # Full build + installers on tag/PR is S3 (release.yml) — tags skip this one.
 on:
   push:
+    # branches MUST be named for branch pushes to trigger at all: a
+    # tags-ignore-only filter matches tag pushes only, which silently
+    # killed this gate between S3 and 2026-09-21 (zero runs on main
+    # pushes). Keep both: every branch push, no v* tag (release.yml owns
+    # those).
+    branches: ['**']
     tags-ignore: ['v*']
 
 jobs:
