@@ -1175,29 +1175,46 @@ fn probe_non_client_support(webview: &tauri::webview::PlatformWebview) -> bool {
 }
 
 /// Probe the non-client support and, when present, drop the native frame:
-/// the web content owns the whole window from now on (layer B). Runs once
-/// from setup, while the window is still hidden — a failure here keeps the
-/// native caption and layer A covers the cosmetics.
+/// the web content owns the whole window from now on (layer B). The probe
+/// MUST NOT run on the setup thread: `with_webview` called from the main
+/// thread executes its closure synchronously (tauri's send_user_message
+/// shortcut), and the WebView2 COM surface stalls until the event loop
+/// pumps — which froze v0.3.0's first launch dead inside setup (no
+/// readiness line, main thread unresponsive; the vendored
+/// tauri-runtime-wry source is the proof). Dispatched from a side thread
+/// the same call posts through the proxy and runs on a pumping loop,
+/// landing comfortably before the readiness line shows the window. A
+/// failure keeps the native caption and layer A covers the cosmetics.
 fn init_borderless_chrome(window: &tauri::WebviewWindow) {
+    let probe_window = window.clone();
     let handle = window.clone();
-    let probe = window.with_webview(move |webview| {
-        if probe_non_client_support(&webview) {
-            CHROME_ACTIVE.store(true, Ordering::Release);
-            let _ = handle.set_decorations(false);
-            let _ = handle.eval(
-                "if (document.getElementById('starting')) \
-                 document.documentElement.dataset.chrome='1';",
-            );
-        } else {
-            log_line(
-                "dsh-desk: WebView2 non-client support unavailable — \
-                 keeping the native caption",
-            );
+    std::thread::spawn(move || {
+        let probe = probe_window.with_webview(move |webview| {
+            if probe_non_client_support(&webview) {
+                CHROME_ACTIVE.store(true, Ordering::Release);
+                // tao 0.35's set_decorations leaves the WS_CAPTION style bit
+                // in place (to_window_styles adds it unconditionally) while
+                // the borderless behavior still engages — verified
+                // 2026-09-21: no native caption painted, app-region drag /
+                // dblclick-maximize / system-menu all live, wry's
+                // TAURI_DRAG_RESIZE_BORDERS child handles edge resizing.
+                let _ = handle.set_decorations(false);
+                log_line("dsh-desk: chrome probe ok — borderless mode active");
+                let _ = handle.eval(
+                    "if (document.getElementById('starting')) \
+                     document.documentElement.dataset.chrome='1';",
+                );
+            } else {
+                log_line(
+                    "dsh-desk: WebView2 non-client support unavailable — \
+                     keeping the native caption",
+                );
+            }
+        });
+        if let Err(error) = probe {
+            log_line(&format!("dsh-desk: chrome probe failed: {error}"));
         }
     });
-    if let Err(error) = probe {
-        log_line(&format!("dsh-desk: chrome probe failed: {error}"));
-    }
 }
 
 /// The drag strip injected into the remote GUI page (layer B). Guarded on

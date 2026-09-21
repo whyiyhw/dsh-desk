@@ -107,7 +107,19 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **窗口从 tauri.conf.json 挪到代码创建后**：window-state 插件经 `on_window_ready` 钩子照常恢复几何（对任何创建路径生效，vendored 源码核实）；`.data_directory()` 是唯一能按实例定向 WebView2 剖面的口子（tauri 在 Windows 强制设剖面但尊重显式指定）。
 - **守卫投递用 `SendMessageTimeoutW(SMTO_ABORTIFHUNG, 3s)`** 不用裸 SendMessageW：幸存者主线程在 Quit 杀树期间不泵消息，裸投递会把二次启动无限卡死。
 - **本批次两轮独立审查都抓到真问题**（S22 的 dev 控制台语义、S23 的 `--instance default` 同锁不同目录 P1）——"无作者上下文审查"门禁继续值回成本。
-- **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。S21 最终以 c0f41c1 落盘（2026-09-21，**真机验证记录仍欠**——原会话中断未落盘，提交信息已注明；补验证时记录按新约定放 `docs/verification/`）。
+- **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。S21 最终以 c0f41c1 落盘（2026-09-21），当日补真机验证并修复 P0 后随 v0.3.1 落地（见下节）。
+
+### S21 无边框与 v0.3.0→v0.3.1（2026-09-21 真机验证沉淀）
+
+> 验证记录 [docs/verification-2026-09-21-S21.md](docs/verification/verification-2026-09-21-S21.md)。
+
+- **setup（主线程）里禁止直接调 `window.with_webview(...)`**——tauri-runtime-wry 的 `send_user_message` 对主线程调用是**同步就地执行闭包**，而闭包里的 WebView2 COM 调用（`controller().CoreWebView2()`、Settings9 的 Set）要事件循环泵消息才能完成，泵又被 setup 占着 → **自死锁**（v0.3.0 首启必挂的根因：日志停在 banner、主线程 Responding=False、boot_server 永不执行、WebView2 子进程却已起）。正解：探测挪 `std::thread::spawn` 旁路线程，同一条 with_webview 经 proxy 投递到泵着的循环执行。**排障指纹**：日志 banner 后无 "started" + 进程活着且闲置 = setup 卡死，先查 setup 里新增的同步调用。
+- **tao 0.35.3 的 `set_decorations(false)` 不摘 WS_CAPTION 样式位**（`to_window_styles()` 无条件 `style |= WS_CAPTION`，仅 CHILD/全屏分支例外）——但无边框**行为**完全成立（原生 caption 不渲染、app-region 语义全活、wry 的 `TAURI_DRAG_RESIZE_BORDERS` 透明子窗供边缘 resize）。判"无边框是否生效"用像素（y=2 有内容色无 #FFFFFF 带）+行为（拖拽/双击最大化/右键系统菜单），**别用 GetWindowLongW 样式位**。
+- **条带顶部 ~8 物理像素是 resize 带**（wry 边框辅助窗的顶边 hit-test）——程序化点击测试 app-region 拖拽要从 y+20 起；用户侧无感（有边框窗口的顶边同样如此）。
+- **wry/tauri 不做持续 title 同步**：页面后期改 `document.title` 不会反映到 Win32 窗口标题（只在加载时同步一次）——想用"写 title + GetWindowTextW 读"当页面侧回传信道，必须 `setInterval` 刷（本舱用红底直证替代后弃用）。**页面侧状态外显的硬信道 = 改可见样式 + 截图**（红底 rgba 叠加在灰内容上=粉色，直证元素在场）。
+- **DPI unaware 脚本的 SetCursorPos 会把窗口几何也一并污染**（不只点击落空）：虚拟化坐标下的"拖拽"会把真窗口拖去乱七八糟的位置且 window-state 插件照单全收——测试前 `SetProcessDPIAware()`，已被污染的 `.window-state.json` 直接删。
+- **判定"面板期点击落在哪页"要留档**：启动面板只活 2-3 秒（热启动更短），点击测试要么抓帧截图同步留证、要么把 config 临时指向缺失命令让错误面板常驻（测完恢复备份）。
+- **CI 触发语义**：`on: push: tags-ignore` 不写 `branches` = 只在**非 v 开头的 tag**上触发、分支推送完全不触发（check.yml 因此死了 16 天没人发现）——分支推送要触发必须显式写 `branches`。`gh run watch` 偶发非零退出（API 抖动），非零 ≠ run 失败，以 `gh run view` 为准。
 
 ### 本机 Hyper-V 组件库损坏与 VM 排障仪器（Phase 2 虚机门禁取证沉淀，2026-09-05）
 

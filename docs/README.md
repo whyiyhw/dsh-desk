@@ -19,6 +19,7 @@
 | [verification-2026-09-06-S14-S20.md](verification/verification-2026-09-06-S14-S20.md) | 交付自验 | S14-S20 UX 批次:更新检查 toast/文案分离/可访性/视觉身份与暗色(WebView2 主题钉死 light 的发现与 data-theme 双通道)/Use detected dsh/首次关窗一次性通知;toast 送达级判定仪器(Action Center 时间戳)+FA 抑制环境事实 |
 | [verification-2026-09-06-S22.md](verification/verification-2026-09-06-S22.md) | 交付自验 | S22 子进程控制台窗口抑制(CREATE_NO_WINDOW×5 站点):探针对照 pre/post 修复(43→0 命中)、按进程树归属的控制台窗枚举仪器、与用户在跑实例共存的探针补丁披露 |
 | [verification-2026-09-06-S23.md](verification/verification-2026-09-06-S23.md) | 交付自验 | S23 多实例(--instance):Phase A 命名实例全过(共存/认证 OCR/cookie 隔离/同实例弹回唤醒)+ 独立审查 1×P1+2×P2+6×P3 修复后重建复验;Phase B 默认实例 §2.4 六条全量走查亦过(合并门禁清空);single-instance 插件不可参数化/cookie 不分端口互踩的实证 |
+| [verification-2026-09-21-S21.md](verification/verification-2026-09-21-S21.md) | 交付自验 | S21 无缝 caption 真机验证:抓到并修复 P0(setup 内 with_webview 同步自死锁——v0.3.0 首启必挂,旁路线程修复)+关闭钮 CSS;修复后无边框双轨全项过(像素直证侧栏 y=0 起无白带、app-region 拖拽/双击最大化/系统菜单、自家页三键);tao 0.35 set_decorations 不摘 WS_CAPTION 位的行为级偏差记录 |
 
 ## 命名约定(即分类)
 
