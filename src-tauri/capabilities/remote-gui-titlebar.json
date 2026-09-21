@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "remote-gui-titlebar",
+  "description": "S25: grants the injected titlebar's three window-control commands to the local dsh GUI origin (the webview only ever navigates to the shell-spawned server, whose port is OS-picked, hence the port wildcard). Residual risk, accepted: any 127.0.0.1 page the main window ever navigates to inherits these three nuisance-level commands (no arguments, no data, no exec). Nothing else is exposed to the remote page.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*"]
+  },
+  "permissions": [
+    "allow-gui-titlebar-controls"
+  ]
+}

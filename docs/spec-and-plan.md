@@ -234,6 +234,8 @@ stateDiagram-v2
 
 | S24 | 高 | 应用内签名自动更新器(S5b/Q2 兑现) | **分层设计**:HTTP 检查(GitHub list API,见 prerelease)=发现层;tauri-plugin-updater(latest.json+minisign 签名链)=安装层;安装层不可用/失败回退开 Releases 页(旧行为保留)。确认对话框(原生,不受 FA 抑制)→下载(签名校验先于执行)→`on_before_exit` 杀净 server(exit(0) 不走 RunEvent)+保存窗口几何→NSIS `/P /UPDATE /R` passive 安装→带参重启(`--instance` 存活)。**密钥(Q2)**:minisign 密钥对,公钥内嵌 tauri.conf.json,私钥/口令在 CI secrets+本地主拷贝(`~/.tauri/dsh-desk/`),**丢失即锁死全部已发布客户端**(spec §4 风险既录)。预发布永不自动装(GitHub latest 通道语义)。CI:tag 构建签名+latest.json;PR 构建(fork 无 secrets)关 updater artifacts | 本地端点全链路真机实测(检测→对话框→下载→验签→杀 server→安装→重启为新版本+server 复活就绪+零孤儿);"无更新"路径对真实 GitHub 实测;安装失败恢复路径同构论证 | **已落地(2026-09-21,v0.3.2)**:独立审查 3×P1(安装器启动失败僵尸态→exiting 复位+server 复活;fork PR 构建分支;README 矛盾)+1×P2(60s 超时)全修后复验;全记录见 [verification-2026-09-21-S24.md](verification/verification-2026-09-21-S24.md);CI 产物 latest.json 以 v0.3.2 Release 资产核验 |
 
+| S25 | 中 | GUI 页可见三键(红线二次扩宽) | S21 豁免扩宽为"一条 drag strip + 右端三窗口按钮(min/max/close),别无一物"(用户拍板 2026-09-21)。按钮经 Tauri IPC 调既有命令(close=hide_to_tray 同契约);**remote origin 应用命令必须显式 ACL**(tauri 源码级确认)→ 应用级权限 `allow-gui-titlebar-controls` + capability `remote-gui-titlebar`(127.0.0.1 端口通配,残余风险注明)。**SPA 拔条带防护**:MutationObserver(documentElement+subtree)自愈重挂 + window 标志防 observer 叠加;invoke 首次失败即降级为纯拖拽条(防死按钮) | 三键逐键坐标点击(min→iconic/max/close→藏托盘)、拖拽/双击/右键回归、视觉验收(控件簇清晰无伪影)、ACL 三文件命令名互锁测试 | **已落地(2026-09-22,v0.3.3)**:独立审查 P2×3+P3×4 全修后复验;25 测试全绿,记录见 [verification-2026-09-22-S25.md](verification/verification-2026-09-22-S25.md) |
+
 ### 2.4 正常路径回归契约(替代含糊的"零回归")
 
 以下为每次交付前必须人工走查的**可观察契约**(也是 Phase 0 冒烟的记录模板):
@@ -351,4 +353,6 @@ stateDiagram-v2
 | 2026-09-21 | **Q2 更新密钥拍板启用(用户:"拍板 Q2"),S5b 就此兑现为 S24**:minisign 密钥对生成(CI secrets ×2 + 本地主拷贝 `~/.tauri/dsh-desk/` 三件套,**待用户离线备份;丢失=锁死全部已发布客户端**);首对密钥因 MSYS openssl base64 口令带 `` 无法解密作废重生成(Windows 口令生成避开 openssl CRLF);更新通道语义=**预发布永不自动安装**(latest.json 走 GitHub latest 通道,prerelease 不在其中),手动经 Releases 页 | 用户拍板 + 密钥仪式记录 |
 | 2026-09-21 | **S24 已落地(v0.3.2)**:分层更新(HTTP 发现/updater 签名安装/开页回退)、on_before_exit 杀 server 兜住 exit(0) 旁路、窗口几何随更新保存、NSIS 带参重启(`--instance` 存活)。**排障沉淀**:被打断的构建留 0 字节 exe→cargo 指纹"输出比依赖新"跳过重链→NSIS 忠实打包 0 字节+signer 忠实签名+updater 忠实安装=全链假故障(教训入 AGENTS:中断构建后删产物重链,勿信指纹);坏安装器注册表 InstallLocation 劫持默认安装路径(显式 /D= + 清注册键复原)。独立审查 3×P1+1×P2 全修(僵尸态恢复/fork PR 分支/README/超时) | 真机验证 + 独立审查;记录 [verification-2026-09-21-S24.md](verification/verification-2026-09-21-S24.md) |
 | 2026-09-21 | **Q1 代码签名显式暂缓(用户:"先不加吧")**:当前用户量下 SmartScreen FAQ+SHA-256 校验和够用;触发重议条件=真实用户反馈安装警告/杀软误报;届时首选 Azure Trusted Signing(~$10/月,个人可验),次选 Certum OV(€70-90/年)。**落地时的工程坑已预研**:Authenticence 改字节→必须先 Authenticode 后生成 minisign .sig,顺序反了更新器拒装自己发的包 | 用户拍板;Q2 已于同日兑现(见上),池中仅剩 Q1/Q4 |
+| 2026-09-22 | **红线二次扩宽(用户拍板"GUI 页加可见三键")**:§5 豁免自"仅一条透明 drag div"扩为"drag strip + 右端三窗口按钮,别无一物";配套 remote ACL 决策=应用级权限只含三命令+127.0.0.1 端口通配(钉死端口不可行,--port 0 是负载性配置),残余风险(任何本机页面继承三纯扰级命令)已注明接受 | 用户拍板 + ACL 源码级论证 |
+| 2026-09-22 | **S25 已落地(v0.3.3)**:含**SPA 拔条带**修复(React 整批替换 body 子节点连根拔注入条——S21 拖拽条同病一并修复,MutationObserver 自愈)。教训入 AGENTS:hover 变色探针二分"节点被移除 vs z-order/位置" | 真机验证 + 独立审查 |
 | 待定 | Q1 代码签名 / Q2 更新密钥 / Q4 winget | 需用户决策,见 §4 |

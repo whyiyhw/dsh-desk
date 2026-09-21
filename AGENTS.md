@@ -110,6 +110,15 @@ Tauri 2 桌面壳：spawn `dsh web` 子进程 → 解析 stdout 就绪行拿带 
 - **本批次两轮独立审查都抓到真问题**（S22 的 dev 控制台语义、S23 的 `--instance default` 同锁不同目录 P1）——"无作者上下文审查"门禁继续值回成本。
 - **并行会话实战**：对面在主树做 S21（caption 断缝，含窗口创建区改动），本批全程在独立 worktree `../dsh-desk-s22s23`（基线 cf8f582）；合并期相遇点=窗口创建区与 spec S 表（对面 S21 行未提交时我方顺延用 S22/S23 编号）。S21 最终以 c0f41c1 落盘（2026-09-21），当日补真机验证并修复 P0 后随 v0.3.1 落地（见下节）。
 
+### S25 GUI 页三键与 remote ACL（2026-09-22 交付沉淀，v0.3.3）
+
+> 验证记录 [docs/verification-2026-09-22-S25.md](docs/verification/verification-2026-09-22-S25.md)。
+
+- **远端 origin 调应用命令必须显式 ACL**（tauri webview/mod.rs:1823：`!is_local` 即过闸门；本地页的应用命令无 ACL 也放行——所以自家页一直好使会误导排障）。配方：`src-tauri/permissions/*.toml` 定义应用级权限（`commands.allow`）+ capability 带 `remote.urls`（URLPattern 语法，**port 支持 `*` 通配**——`--port 0` 随机端口的正解）。三件套（注入 JS / permissions / capability）命令名用 `include_str!` 测试互锁，防改名静默死键。
+- **React SPA 会整批替换 body 子节点，注入即被连根拔**（S25 三键首轮全灭的根因；S21 的纯拖拽条同病，此前只是没暴露——"拖不动"很少被归因）。防护：MutationObserver 观察 `document.documentElement` + `subtree`（连 body 整体替换都自愈）+ 回调 `removedNodes` 预过滤 + window 标志防 observer 叠加。
+- **诊断注入节点存活性用 hover 变色探针**：mouseenter 是纯 DOM 事件、不走 IPC 不依赖坐标命中——把"节点被移除"（hover 不变色）与"z-order/位置问题"（变色但点击无效）一刀二分；配合"点击→黄、resolve→绿、reject→洋红+错误文本渲染进按钮"的可视化仪器，一次截图拿全真相。
+- 合成点击首启后偶发失手（焦点未稳）——**判 PASS/FAIL 前复跑一轮**，别让一次性 FAIL 驱动改代码。
+
 ### S24 应用内签名更新器（2026-09-21 交付沉淀，v0.3.2）
 
 > 验证记录 [docs/verification-2026-09-21-S24.md](docs/verification/verification-2026-09-21-S24.md)。

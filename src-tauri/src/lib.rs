@@ -1220,19 +1220,77 @@ fn init_borderless_chrome(window: &tauri::WebviewWindow) {
     });
 }
 
-/// The drag strip injected into the remote GUI page (layer B). Guarded on
-/// the shell's own pages (`starting` exists there and carries a built-in
-/// strip) and idempotent by id — the red-line exemption touches nothing
-/// else on the page.
+/// The drag strip + visible window buttons injected into the remote GUI page
+/// (layer B + S25). Guarded on the shell's own pages (`starting` exists there
+/// and carries a built-in strip) and idempotent by a window flag (re-evals in
+/// the same document no-op; the observer below owns re-healing instead). The
+/// §5 red-line exemption, widened by user decision 2026-09-21: one drag strip
+/// plus its three window-control buttons, nothing else. The buttons need the
+/// Tauri IPC (granted to this origin only through the remote-gui-titlebar
+/// capability); without it — or on the first rejected invoke — the buttons
+/// degrade away to a drag-only strip (a dead button is worse than none, and
+/// the system menu still covers every action).
+///
+/// The GUI is a React SPA whose renders can replace the body's children
+/// wholesale, uprooting the strip (measured 2026-09-22: buttons present after
+/// load, gone after the next route change — clicks landing on nothing). A
+/// MutationObserver therefore re-attaches the strip whenever it is removed;
+/// it observes documentElement with subtree (survives even a full body
+/// replacement) and a window flag keeps a second injection from stacking a
+/// second observer.
 fn drag_strip_injection_js() -> String {
     format!(
         "(function () {{ \
-             if (document.getElementById('starting') || \
-                 document.getElementById('{id}')) return; \
+             if (document.getElementById('starting')) return; \
+             if (window.__deskStripInit) return; \
+             window.__deskStripInit = true; \
+             var inv = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke; \
              var d = document.createElement('div'); \
              d.id = '{id}'; \
              d.style.cssText = 'position:fixed;top:0;left:0;right:0;height:{h}px;z-index:2147483646;app-region:drag;'; \
+             function degrade() {{ \
+                 for (var i = d.children.length - 1; i >= 0; i--) d.removeChild(d.children[i]); \
+             }} \
+             function btn(n, right, cmd, red) {{ \
+                 var b = document.createElement('div'); \
+                 b.id = '{id}-' + n; \
+                 b.style.cssText = 'position:absolute;top:0;right:' + right + 'px; \
+                     width:44px;height:{h}px;display:flex;align-items:center;justify-content:center; \
+                     app-region:no-drag;cursor:default;color:#808080;background:rgba(127,127,127,0.15);'; \
+                 var svg = n === 'min' \
+                     ? '<svg width=\"10\" height=\"10\" viewBox=\"0 0 10 10\"><path d=\"M0 5h10\" stroke=\"currentColor\" stroke-width=\"1\"/></svg>' \
+                     : n === 'max' \
+                         ? '<svg width=\"10\" height=\"10\" viewBox=\"0 0 10 10\"><rect x=\"0.5\" y=\"0.5\" width=\"9\" height=\"9\" fill=\"none\" stroke=\"currentColor\"/></svg>' \
+                         : '<svg width=\"10\" height=\"10\" viewBox=\"0 0 10 10\"><path d=\"M0 0l10 10M10 0L0 10\" stroke=\"currentColor\" stroke-width=\"1\"/></svg>'; \
+                 b.innerHTML = svg; \
+                 b.addEventListener('mouseenter', function () {{ \
+                     b.style.background = red ? '#e81123' : 'rgba(128,128,128,0.4)'; \
+                     b.style.color = red ? '#fff' : '#333'; \
+                 }}); \
+                 b.addEventListener('mouseleave', function () {{ \
+                     b.style.background = 'rgba(127,127,127,0.15)'; \
+                     b.style.color = '#808080'; \
+                 }}); \
+                 b.addEventListener('click', function () {{ \
+                     inv(cmd).then(undefined, function (error) {{ \
+                         console.error('[dsh-desk] titlebar ' + cmd + ' failed:', error); \
+                         degrade(); \
+                     }}); \
+                 }}); \
+                 d.appendChild(b); \
+             }} \
+             if (inv) {{ \
+                 btn('min', 88, 'window_minimize', false); \
+                 btn('max', 44, 'window_toggle_maximize', false); \
+                 btn('close', 0, 'window_hide', true); \
+             }} \
              (document.body || document.documentElement).appendChild(d); \
+             new MutationObserver(function (mutations) {{ \
+                 if (!mutations.some(function (m) {{ return m.removedNodes.length > 0; }})) return; \
+                 if (!document.getElementById('{id}')) {{ \
+                     (document.body || document.documentElement).appendChild(d); \
+                 }} \
+             }}).observe(document.documentElement, {{ childList: true, subtree: true }}); \
          }})();",
         id = DESK_DRAG_STRIP_ID,
         h = DRAG_STRIP_HEIGHT_PX
@@ -2696,6 +2754,48 @@ mod tests {
         // The strip is caption-only chrome: one fixed, transparent div.
         assert!(js.contains("app-region:drag"));
         assert!(js.contains("position:fixed;top:0;left:0;right:0"));
+        // S25: the three visible buttons are opt-out of the drag region,
+        // wire to the capability-scoped commands, and render only when the
+        // IPC is actually reachable (drag-only degradation otherwise).
+        for (suffix, command) in [
+            ("min", "window_minimize"),
+            ("max", "window_toggle_maximize"),
+            ("close", "window_hide"),
+        ] {
+            assert!(js.contains(&format!("btn('{suffix}',")));
+            assert!(js.contains(command));
+        }
+        assert!(js.contains("app-region:no-drag"));
+        assert!(js.contains("__TAURI_INTERNALS__.invoke"));
+        assert!(js.contains("if (inv) {"));
+        // Close is the one button with the Windows-red hover.
+        assert!(js.contains("'#e81123'"));
+        // The observer self-heal (the SPA uproots body children) and the
+        // degrade path must stay in the generated script.
+        assert!(js.contains("MutationObserver"));
+        assert!(js.contains("document.documentElement"));
+        assert!(js.contains("function degrade()"));
+    }
+
+    #[test]
+    fn gui_titlebar_acl_files_name_the_same_commands() {
+        // The remote page's buttons are only as alive as the ACL beneath
+        // them: the permission must allow exactly the three commands the
+        // injection invokes, and the capability must grant that permission
+        // to the local-origin wildcard — a rename on either side otherwise
+        // kills the buttons with no test failing (review finding).
+        let permission = include_str!("../permissions/gui-titlebar.toml");
+        for command in ["window_minimize", "window_toggle_maximize", "window_hide"] {
+            assert!(
+                permission.contains(command),
+                "{command} missing from the permission"
+            );
+        }
+        assert!(permission.contains("allow-gui-titlebar-controls"));
+        let capability = include_str!("../capabilities/remote-gui-titlebar.json");
+        assert!(capability.contains("allow-gui-titlebar-controls"));
+        assert!(capability.contains("http://127.0.0.1:*"));
+        assert!(capability.contains("\"main\""));
     }
 
     // ── S23: multi-instance ─────────────────────────────────────────────

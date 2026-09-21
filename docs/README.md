@@ -21,6 +21,7 @@
 | [verification-2026-09-06-S23.md](verification/verification-2026-09-06-S23.md) | 交付自验 | S23 多实例(--instance):Phase A 命名实例全过(共存/认证 OCR/cookie 隔离/同实例弹回唤醒)+ 独立审查 1×P1+2×P2+6×P3 修复后重建复验;Phase B 默认实例 §2.4 六条全量走查亦过(合并门禁清空);single-instance 插件不可参数化/cookie 不分端口互踩的实证 |
 | [verification-2026-09-21-S21.md](verification/verification-2026-09-21-S21.md) | 交付自验 | S21 无缝 caption 真机验证:抓到并修复 P0(setup 内 with_webview 同步自死锁——v0.3.0 首启必挂,旁路线程修复)+关闭钮 CSS;修复后无边框双轨全项过(像素直证侧栏 y=0 起无白带、app-region 拖拽/双击最大化/系统菜单、自家页三键);tao 0.35 set_decorations 不摘 WS_CAPTION 位的行为级偏差记录 |
 | [verification-2026-09-21-S24.md](verification/verification-2026-09-21-S24.md) | 交付自验 | S24 应用内签名自动更新器(Q2 兑现):密钥仪式+CI 签名/latest.json 清单+分层设计(HTTP 发现/updater 安装/回退开页);本地端点全链路实测(检测→对话框→下载→验签→杀 server→NSIS 安装→重启 0.3.3);排障记录:被打断的构建留 0 字节 exe 被 cargo 指纹误判跳过重链→忠实打包签名安装的全链假故障;独立审查 3×P1(安装失败僵尸态恢复/fork PR 构建分支/README 矛盾)+1×P2(超时)全修 |
+| [verification-2026-09-22-S25.md](verification/verification-2026-09-22-S25.md) | 交付自验 | S25 GUI 页可见三键:红线二次扩宽(用户拍板)+remote ACL(应用级权限+127.0.0.1 端口通配);抓到并修复 React SPA 整批替换 body 拔条带问题(S21 拖拽条同病,MutationObserver 自愈);独立审查 P2×3+P3×4 全修;25 测试 |
 
 ## 命名约定(即分类)
 

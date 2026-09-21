@@ -1,0 +1,11 @@
+# S25: window-control commands for the remote GUI page's injected titlebar.
+# The shell injects a visible min/max/close strip into the dsh web GUI
+# (127.0.0.1, OS-picked port); Tauri's IPC gate rejects app commands from
+# non-local origins unless an explicit ACL entry matches, so the three
+# cosmetic window commands get their own app-level permission, granted to
+# the remote origin ONLY through the remote-gui-titlebar capability.
+# Deliberately excludes everything else (updater, opener, config writes).
+[[permission]]
+identifier = "allow-gui-titlebar-controls"
+description = "Allows the remote dsh GUI page to minimize, maximize/restore, and close-to-tray its window from the injected titlebar buttons."
+commands.allow = ["window_minimize", "window_toggle_maximize", "window_hide"]
