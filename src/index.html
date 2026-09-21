@@ -167,9 +167,58 @@
         outline: 2px solid var(--accent);
         outline-offset: 2px;
       }
+      /* S21: borderless-chrome titlebar strip. Hidden by default — the
+         Rust side stamps data-chrome="1" only when the WebView2
+         non-client support is active, so an old runtime keeps its native
+         caption and never sees a duplicate. The strip itself is a caption
+         (app-region: drag): drag moves, double-click maximizes; the
+         buttons opt out with app-region: no-drag. Colors ride the page
+         tokens; the close hover is the Windows red. */
+      #titlebar {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 32px;
+        z-index: 2147483647;
+        app-region: drag;
+      }
+      :root[data-chrome="1"] #titlebar { display: block; }
+      .tb-btn {
+        position: absolute;
+        top: 0;
+        width: 44px;
+        height: 32px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        app-region: no-drag;
+        color: var(--muted);
+      }
+      .tb-btn:hover { background: var(--btn-hover); color: var(--text); }
+      .tb-btn svg { width: 10px; height: 10px; display: block; }
+      #tb-min { right: 88px; }
+      #tb-max { right: 44px; }
+      #tb-close:hover { background: #e81123; color: #fff; }
     </style>
   </head>
   <body>
+    <!-- S21: built-in titlebar strip (see the #titlebar CSS). Inert until
+         the Rust side stamps data-chrome="1"; buttons carry titles because
+         aria-hidden makes this block invisible to assistive tech and the
+         strip must never fake a role it cannot guarantee. -->
+    <div id="titlebar" aria-hidden="true">
+      <div class="tb-btn" id="tb-min" title="Minimize">
+        <svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg>
+      </div>
+      <div class="tb-btn" id="tb-max" title="Maximize">
+        <svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor"/></svg>
+      </div>
+      <div class="tb-btn" id="tb-close" title="Close">
+        <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg>
+      </div>
+    </div>
     <!-- S17: the brand mark, defined once and reused by every panel. -->
     <svg width="0" height="0" style="position:absolute" aria-hidden="true">
       <defs>
@@ -295,6 +344,13 @@
       document.getElementById('btn-onb-retry').addEventListener('click', () => invoke('retry_server'));
       document.getElementById('btn-wv2-download').addEventListener('click', () => invoke('open_webview2_download'));
       document.getElementById('btn-wv2-retry').addEventListener('click', () => invoke('retry_server'));
+      // S21: the built-in titlebar strip's buttons. The strip itself is
+      // inert until the Rust side stamps data-chrome="1" (probe passed);
+      // invoke failures surface in the active panel like every other
+      // action on this page.
+      document.getElementById('tb-min').addEventListener('click', () => invoke('window_minimize'));
+      document.getElementById('tb-max').addEventListener('click', () => invoke('window_toggle_maximize'));
+      document.getElementById('tb-close').addEventListener('click', () => invoke('window_hide'));
     </script>
   </body>
 </html>

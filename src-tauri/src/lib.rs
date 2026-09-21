@@ -44,6 +44,7 @@ const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(4);
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::PageLoadEvent,
     AppHandle, Manager, RunEvent, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
@@ -695,17 +696,179 @@ fn theme_prefix() -> &'static str {
     }
 }
 
-/// Stamp the theme wherever the window becomes visible OUTSIDE a panel eval
-/// (tray Show, hotkey toggle, single-instance focus): without this a
-/// dark-mode user peeking at the still-starting page gets the light
-/// default. Idempotent on the page; a no-op on the remote GUI page (the
-/// `starting` element exists only on ours).
+// ── S21: seamless caption (the top-left seam) ──────────────────────────
+//
+// The native caption (pure white) sits on top of the remote GUI's sidebar
+// (#F9FAFB, measured 2026-09-06): over the 349px sidebar column the two
+// whites meet in a hard edge that reads as a chopped-off corner, while the
+// white main area blends invisibly. Two layers fix it:
+//
+//   A (fallback): tint the native caption toward the GUI — light mode gets
+//      DWMWA_CAPTION_COLOR = #F9FAFB, dark mode the system dark caption.
+//      Active whenever the borderless mode below is unavailable.
+//   B (primary): wry already enables WebView2's non-client support
+//      (IsNonClientRegionSupportEnabled, Settings9 / Runtime 123+; wry
+//      ≥0.40 sets it unconditionally) on every webview it builds. When
+//      the Settings9 cast proves it, the
+//      window drops its native frame and the pages carry `app-region:
+//      drag` strips instead: built into our own pages, injected as a
+//      single transparent div into the remote GUI page (the §5 red-line
+//      exemption, user-approved 2026-09-06 — one div, nothing else).
+
+/// Sidebar gray of the dsh GUI, #F9FAFB, as a Win32 COLORREF (0x00BBGGRR).
+const CAPTION_COLORREF_LIGHT: u32 = 0x00FB_FAF9;
+const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+const DWMWA_CAPTION_COLOR: u32 = 35;
+/// Height of the drag strips, in CSS pixels — deep enough to drag from,
+/// shallow enough to leave the GUI's own top controls alone.
+const DRAG_STRIP_HEIGHT_PX: u32 = 32;
+/// Id of the injected strip on the remote GUI page; also the idempotency
+/// key of the injection.
+const DESK_DRAG_STRIP_ID: &str = "desk-drag-strip";
+
+/// Whether the borderless chrome is active. Probed once per launch, while
+/// the window is still hidden; `false` keeps the native-frame behavior of
+/// every release before S21.
+static CHROME_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn chrome_active() -> bool {
+    CHROME_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Page stamps eval'd under an "our page" guard before any panel helper:
+/// the S17 theme stamp plus the S21 chrome attribute that reveals the
+/// built-in titlebar strip.
+fn page_stamps() -> String {
+    let mut stamps = String::new();
+    if chrome_active() {
+        stamps.push_str("document.documentElement.dataset.chrome='1';");
+    }
+    stamps.push_str(theme_prefix());
+    stamps
+}
+
+/// (attribute, value) pairs that push the native caption toward the GUI
+/// for the current app mode. Light tints to the measured sidebar gray;
+/// dark asks for the system dark caption instead of guessing the GUI's
+/// dark sidebar token. DWMWA_CAPTION_COLOR is Win11 22000+ — on Win10 the
+/// call fails and the light seam stays, which apply_caption_tint logs.
+fn caption_tint_attrs(dark: bool) -> Vec<(u32, u32)> {
+    if dark {
+        vec![(DWMWA_USE_IMMERSIVE_DARK_MODE, 1)]
+    } else {
+        vec![(DWMWA_CAPTION_COLOR, CAPTION_COLORREF_LIGHT)]
+    }
+}
+
+// Hand-declared DwmSetWindowAttribute — two calls on the fallback path do
+// not justify a windows-crate feature dance, and the ABI is frozen.
+extern "system" {
+    fn DwmSetWindowAttribute(
+        hwnd: *mut std::ffi::c_void,
+        attribute: u32,
+        value: *const std::ffi::c_void,
+        size: u32,
+    ) -> i32;
+}
+
+/// Apply the caption tint (layer A). Best-effort by design: every failure
+/// is logged and the stock caption remains — cosmetics must never block
+/// boot. Harmless when layer B later removes the caption entirely.
+fn apply_caption_tint(window: &tauri::WebviewWindow, dark: bool) {
+    let Ok(hwnd) = window.hwnd() else {
+        return;
+    };
+    for (attribute, value) in caption_tint_attrs(dark) {
+        let hr = unsafe {
+            DwmSetWindowAttribute(hwnd.0, attribute, &value as *const u32 as *const _, 4)
+        };
+        if hr != 0 {
+            log_line(&format!(
+                "dsh-desk: DwmSetWindowAttribute({attribute}) failed (hr={hr:#010x}) — \
+                 the native caption stays as-is"
+            ));
+        }
+    }
+}
+
+/// Whether this WebView2 honors the non-client region support (Settings9,
+/// Runtime 123+). wry already set the flag at webview creation; setting it
+/// again here makes the probe the proof instead of a version guess. The
+/// feature provides caption hit-testing for `app-region` CSS only — it
+/// draws no buttons (the button-drawing overlay is a separate, still
+/// prerelease API), which is why the shell pages draw their own.
+fn probe_non_client_support(webview: &tauri::webview::PlatformWebview) -> bool {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings9;
+    use windows_core::Interface;
+    let Ok(webview2) = (unsafe { webview.controller().CoreWebView2() }) else {
+        return false;
+    };
+    let Ok(settings) = (unsafe { webview2.Settings() }) else {
+        return false;
+    };
+    let Ok(settings9) = settings.cast::<ICoreWebView2Settings9>() else {
+        return false;
+    };
+    unsafe { settings9.SetIsNonClientRegionSupportEnabled(true) }.is_ok()
+}
+
+/// Probe the non-client support and, when present, drop the native frame:
+/// the web content owns the whole window from now on (layer B). Runs once
+/// from setup, while the window is still hidden — a failure here keeps the
+/// native caption and layer A covers the cosmetics.
+fn init_borderless_chrome(window: &tauri::WebviewWindow) {
+    let handle = window.clone();
+    let probe = window.with_webview(move |webview| {
+        if probe_non_client_support(&webview) {
+            CHROME_ACTIVE.store(true, Ordering::Release);
+            let _ = handle.set_decorations(false);
+            let _ = handle.eval(
+                "if (document.getElementById('starting')) \
+                 document.documentElement.dataset.chrome='1';",
+            );
+        } else {
+            log_line(
+                "dsh-desk: WebView2 non-client support unavailable — \
+                 keeping the native caption",
+            );
+        }
+    });
+    if let Err(error) = probe {
+        log_line(&format!("dsh-desk: chrome probe failed: {error}"));
+    }
+}
+
+/// The drag strip injected into the remote GUI page (layer B). Guarded on
+/// the shell's own pages (`starting` exists there and carries a built-in
+/// strip) and idempotent by id — the red-line exemption touches nothing
+/// else on the page.
+fn drag_strip_injection_js() -> String {
+    format!(
+        "(function () {{ \
+             if (document.getElementById('starting') || \
+                 document.getElementById('{id}')) return; \
+             var d = document.createElement('div'); \
+             d.id = '{id}'; \
+             d.style.cssText = 'position:fixed;top:0;left:0;right:0;height:{h}px;z-index:2147483646;app-region:drag;'; \
+             (document.body || document.documentElement).appendChild(d); \
+         }})();",
+        id = DESK_DRAG_STRIP_ID,
+        h = DRAG_STRIP_HEIGHT_PX
+    )
+}
+
+/// Stamp the page stamps wherever the window becomes visible OUTSIDE a
+/// panel eval (tray Show, hotkey toggle, single-instance focus, open_gui):
+/// without this a dark-mode user peeking at the still-starting page gets
+/// the light default, and the built-in titlebar strip would not learn that
+/// the borderless chrome is active. Idempotent on the page; a no-op on the
+/// remote GUI page (the `starting` element exists only on ours).
 fn stamp_page_theme(window: &tauri::WebviewWindow) {
-    if app_mode_dark_cached() {
-        let _ = window.eval(
-            "if (document.getElementById('starting')) \
-             { document.documentElement.dataset.theme='dark'; }",
-        );
+    let stamps = page_stamps();
+    if !stamps.is_empty() {
+        let _ = window.eval(&format!(
+            "if (document.getElementById('starting')) {{ {stamps} }}"
+        ));
     }
 }
 
@@ -716,7 +879,7 @@ fn show_hint(app: &AppHandle) {
         let _ = window.show();
         let _ = window.eval(&format!(
             "if (typeof deskShowHint === 'function') {{ {}deskShowHint(); }}",
-            theme_prefix()
+            page_stamps()
         ));
     }
 }
@@ -738,18 +901,18 @@ fn show_panel(app: &AppHandle, helper: &str, message: &str, extra_arg: bool, wai
          document.body.style.cssText = 'font: 14px system-ui; padding: 24px; color: #333; white-space: pre-wrap;', \
          document.body.textContent = {message}"
     );
-    let theme = theme_prefix();
+    let stamps = page_stamps();
     let script = if wait {
         format!(
             "(function () {{ var n = 0; \
-              function go() {{ if (typeof {helper} === 'function') {{ {theme}{helper}({args}); }} \
+              function go() {{ if (typeof {helper} === 'function') {{ {stamps}{helper}({args}); }} \
                 else if (n++ < 25) setTimeout(go, 200); \
                 else ({fallback}); }} \
               go(); }})();"
         )
     } else {
         format!(
-            "if (typeof {helper} === 'function') {{ {theme}{helper}({args}); }} \
+            "if (typeof {helper} === 'function') {{ {stamps}{helper}({args}); }} \
              else ({fallback});"
         )
     };
@@ -1281,6 +1444,60 @@ fn open_webview2_download(app: AppHandle) {
     open_external(&app, WEBVIEW2_DOWNLOAD_URL, "WebView2 download page");
 }
 
+// ── S21: the built-in titlebar strip's buttons (shell pages only) ─────
+
+#[tauri::command]
+fn window_minimize(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.minimize();
+    }
+}
+
+/// Maximize and restore share one button, like the native caption's does.
+#[tauri::command]
+fn window_toggle_maximize(app: AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = if window.is_maximized().unwrap_or(false) {
+            window.unmaximize()
+        } else {
+            window.maximize()
+        };
+    }
+}
+
+#[tauri::command]
+fn window_hide(app: AppHandle) {
+    hide_to_tray(&app);
+}
+
+/// Hide to tray with the S19 first-close hint — the one true "close" of
+/// this app (contract §2.4: closing hides, the tray Quit exits). Shared by
+/// the real close (CloseRequested) and the S21 strip's close button so the
+/// hint fires exactly once across both paths (the marker file dedupes).
+fn hide_to_tray(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+        // S19: the FIRST close is the one a new user finds surprising
+        // ("where did the app go?") — say it once, then stay quiet
+        // forever. The marker is a plain file, not a config field.
+        if let Some(path) = tray_hint_path() {
+            if !path.exists() {
+                show_toast(
+                    app,
+                    "The window is closed — DSH Desk keeps running in the tray \
+                     (Alt+Shift+D or the tray icon brings it back).",
+                );
+                if let Err(error) = std::fs::write(&path, b"") {
+                    log_line(&format!(
+                        "dsh-desk: writing the tray-hint marker failed ({error}) \
+                         — the hint may repeat on the next close"
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Append a note to whatever panel is showing — the same channel the
 /// invoke-failure fallback uses. A command that cannot do its job must not
 /// leave the panel silent (the S14 lesson, applied to S18).
@@ -1404,7 +1621,10 @@ pub fn run() {
             retry_server,
             use_detected_dsh,
             open_dsh_page,
-            open_webview2_download
+            open_webview2_download,
+            window_minimize,
+            window_toggle_maximize,
+            window_hide
         ])
         .setup(|app| {
             // S13: bound the mirror log first. This runs only in the
@@ -1510,6 +1730,14 @@ pub fn run() {
             // ── global hotkey: Alt+Shift+D toggles the window ────────────────
             let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyD);
             app.global_shortcut().register(shortcut)?;
+            // ── S21: seamless caption ────────────────────────────────────────
+            // Layer A always (harmless once B removes the caption), B
+            // probes on the webview thread while the window is still
+            // hidden; a failed probe keeps the native caption and logs.
+            if let Some(window) = app.get_webview_window("main") {
+                apply_caption_tint(&window, app_mode_dark_cached());
+                init_borderless_chrome(&window);
+            }
             // ── boot the server ──────────────────────────────────────────────
             // The S4 gates (WebView2 runtime, install guide) live inside
             // spawn_server, so every path — boot, Retry, tray Restart —
@@ -1520,26 +1748,17 @@ pub fn run() {
         .on_window_event(|window, event| {
             // Closing hides to tray; the tray's Quit is the real exit.
             if let WindowEvent::CloseRequested { api, .. } = event {
-                let _ = window.hide();
                 api.prevent_close();
-                // S19: the FIRST close is the one a new user finds surprising
-                // ("where did the app go?") — say it once, then stay quiet
-                // forever. The marker is a plain file, not a config field.
-                if let Some(path) = tray_hint_path() {
-                    if !path.exists() {
-                        show_toast(
-                            window.app_handle(),
-                            "The window is closed — DSH Desk keeps running in the tray \
-                             (Alt+Shift+D or the tray icon brings it back).",
-                        );
-                        if let Err(error) = std::fs::write(&path, b"") {
-                            log_line(&format!(
-                                "dsh-desk: writing the tray-hint marker failed ({error}) \
-                                 — the hint may repeat on the next close"
-                            ));
-                        }
-                    }
-                }
+                hide_to_tray(window.app_handle());
+            }
+        })
+        .on_page_load(|webview, payload| {
+            // S21: the remote GUI page gets its drag strip on load — a
+            // single transparent div (the §5 red-line exemption). The
+            // shell's own pages are skipped by the guard inside: they
+            // carry a built-in strip behind the data-chrome stamp.
+            if payload.event() == PageLoadEvent::Finished && chrome_active() {
+                let _ = webview.eval(&drag_strip_injection_js());
             }
         })
         .build(tauri::generate_context!())
@@ -1859,5 +2078,36 @@ mod tests {
                 "no internal shell jargon in the panel copy"
             );
         }
+    }
+
+    // ── S21: seamless caption policy ──────────────────────────────────
+
+    #[test]
+    fn caption_tint_matches_app_mode() {
+        // Light: tint the caption to the measured sidebar gray #F9FAFB as
+        // a COLORREF (0x00BBGGRR) — the exact seam color from the
+        // 2026-09-06 forensic scan (y=27 in the user screenshot).
+        assert_eq!(
+            caption_tint_attrs(false),
+            [(DWMWA_CAPTION_COLOR, 0x00FBFAF9)]
+        );
+        // Dark: the system dark caption — no hardcoded guess at the GUI's
+        // dark sidebar token.
+        assert_eq!(
+            caption_tint_attrs(true),
+            [(DWMWA_USE_IMMERSIVE_DARK_MODE, 1)]
+        );
+    }
+
+    #[test]
+    fn drag_strip_injection_is_guarded_and_idempotent() {
+        let js = drag_strip_injection_js();
+        // Red-line guards: our pages (built-in strip) are skipped, and a
+        // page that already carries the strip is not touched twice.
+        assert!(js.contains("getElementById('starting')"));
+        assert!(js.contains(&format!("getElementById('{}')", DESK_DRAG_STRIP_ID)));
+        // The strip is caption-only chrome: one fixed, transparent div.
+        assert!(js.contains("app-region:drag"));
+        assert!(js.contains("position:fixed;top:0;left:0;right:0"));
     }
 }

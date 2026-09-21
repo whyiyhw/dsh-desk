@@ -25,6 +25,13 @@ ureq = { version = "2", features = ["json"] }
 tauri-plugin-window-state = "2"
 # S7 tray status: system toast when the server dies unexpectedly.
 tauri-plugin-notification = "2"
+# S21 seamless caption: the non-client capability probe runs through the
+# same webview2-com the tree already carries via tauri (Settings9 = the
+# IsNonClientRegionSupportEnabled property); windows-core supplies
+# Interface::cast. The fallback caption tint is a two-line dwmapi extern,
+# no further crate.
+webview2-com = "0.38"
+windows-core = "0.61"
 
 [profile.release]
 strip = true
